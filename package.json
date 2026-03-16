@@ -1,0 +1,25 @@
+{
+  "name": "@lovely-office/sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "private": false,
+  "description": "Forked Claude Agent SDK with token optimization patches",
+  "main": "src/sdk.mjs",
+  "types": "src/sdk.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/sdk.d.ts",
+      "import": "./src/sdk.mjs",
+      "default": "./src/sdk.mjs"
+    },
+    "./sdk-tools": {
+      "types": "./src/sdk-tools.d.ts"
+    }
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "files": [
+    "src/"
+  ]
+}
