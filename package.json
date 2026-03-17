@@ -1,9 +1,9 @@
 {
   "name": "@lovely-office/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "private": false,
-  "description": "Forked Claude Agent SDK with token optimization patches",
+  "description": "Forked Claude Agent SDK v0.2.77 with token optimization patches",
   "main": "src/sdk.mjs",
   "types": "src/sdk.d.ts",
   "exports": {
@@ -12,7 +12,18 @@
       "import": "./src/sdk.mjs",
       "default": "./src/sdk.mjs"
     },
+    "./embed": {
+      "types": "./src/embed.d.ts",
+      "default": "./src/embed.js"
+    },
+    "./browser": {
+      "types": "./src/browser-sdk.d.ts",
+      "default": "./src/browser-sdk.js"
+    },
     "./sdk-tools": {
+      "types": "./src/sdk-tools.d.ts"
+    },
+    "./sdk-tools.js": {
       "types": "./src/sdk-tools.d.ts"
     }
   },

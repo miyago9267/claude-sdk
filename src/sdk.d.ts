@@ -26,6 +26,10 @@ export declare type AccountInfo = {
     subscriptionType?: string;
     tokenSource?: string;
     apiKeySource?: string;
+    /**
+     * Active API backend. Anthropic OAuth login only applies when "firstParty"; for 3P providers the other fields are absent and auth is external (AWS creds, gcloud ADC, etc.).
+     */
+    apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry';
 };
 
 /**
@@ -139,6 +143,22 @@ export declare type CanUseTool = (toolName: string, input: Record<string, unknow
     /** Explains why this permission request was triggered. */
     decisionReason?: string;
     /**
+     * Full permission prompt sentence rendered by the bridge (e.g.
+     * "Claude wants to read foo.txt"). Use this as the primary prompt
+     * text when present instead of reconstructing from toolName+input.
+     */
+    title?: string;
+    /**
+     * Short noun phrase for the tool action (e.g. "Read file"), suitable
+     * for button labels or compact UI.
+     */
+    displayName?: string;
+    /**
+     * Human-readable subtitle from the bridge (e.g. "Claude will have
+     * read and write access to files in ~/Downloads").
+     */
+    description?: string;
+    /**
      * Unique identifier for this specific tool call within the assistant message.
      * Multiple tool calls in the same assistant message will have different toolUseIDs.
      */
@@ -236,6 +256,7 @@ declare namespace coreTypes {
         PromptRequest,
         PromptResponse,
         RewindFilesResult,
+        SDKAPIRetryMessage,
         SDKAssistantMessageError,
         SDKAssistantMessage,
         SDKAuthStatusMessage,
@@ -498,7 +519,7 @@ export declare type InstructionsLoadedHookInput = BaseHookInput & {
     hook_event_name: 'InstructionsLoaded';
     file_path: string;
     memory_type: 'User' | 'Project' | 'Local' | 'Managed';
-    load_reason: 'session_start' | 'nested_traversal' | 'path_glob_match' | 'include';
+    load_reason: 'session_start' | 'nested_traversal' | 'path_glob_match' | 'include' | 'compact';
     globs?: string[];
     trigger_file_path?: string;
     parent_file_path?: string;
@@ -1449,6 +1470,19 @@ export declare interface Query extends AsyncGenerator<SDKMessage, void> {
      */
     setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void>;
     /**
+     * Merge the provided settings into the flag settings layer, dynamically
+     * updating the active configuration. Top-level keys are shallow-merged
+     * across successive calls — a second call with `{permissions: {...}}`
+     * replaces the entire `permissions` object from a prior call. The resulting
+     * flag settings are then deep-merged with file-based settings at read time.
+     *
+     * Equivalent to passing an object to the `settings` option of `query()`,
+     * but applies mid-session. Only available in streaming input mode.
+     *
+     * @param settings - A partial settings object to merge into the flag settings
+     */
+    applyFlagSettings(settings: Settings): Promise<void>;
+    /**
      * Get the full initialization result, including supported commands, models,
      * account info, and output style configuration.
      *
@@ -1589,6 +1623,8 @@ declare const SandboxFilesystemConfigSchema: () => z.ZodOptional<z.ZodObject<{
     allowWrite: z.ZodOptional<z.ZodArray<z.ZodString>>;
     denyWrite: z.ZodOptional<z.ZodArray<z.ZodString>>;
     denyRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    allowRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    allowManagedReadPathsOnly: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strip>>;
 
 export declare type SandboxIgnoreViolations = NonNullable<SandboxSettings['ignoreViolations']>;
@@ -1630,6 +1666,8 @@ declare const SandboxSettingsSchema: () => z.ZodObject<{
         allowWrite: z.ZodOptional<z.ZodArray<z.ZodString>>;
         denyWrite: z.ZodOptional<z.ZodArray<z.ZodString>>;
         denyRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
+        allowRead: z.ZodOptional<z.ZodArray<z.ZodString>>;
+        allowManagedReadPathsOnly: z.ZodOptional<z.ZodBoolean>;
     }, z.core.$strip>>;
     ignoreViolations: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodArray<z.ZodString>>>;
     enableWeakerNestedSandbox: z.ZodOptional<z.ZodBoolean>;
@@ -1640,6 +1678,21 @@ declare const SandboxSettingsSchema: () => z.ZodObject<{
         args: z.ZodOptional<z.ZodArray<z.ZodString>>;
     }, z.core.$strip>>;
 }, z.core.$loose>;
+
+/**
+ * Emitted when an API request fails with a retryable error and will be retried after a delay. error_status is null for connection errors (e.g. timeouts) that had no HTTP response.
+ */
+export declare type SDKAPIRetryMessage = {
+    type: 'system';
+    subtype: 'api_retry';
+    attempt: number;
+    max_retries: number;
+    retry_delay_ms: number;
+    error_status: number | null;
+    error: SDKAssistantMessageError;
+    uuid: UUID;
+    session_id: string;
+};
 
 export declare type SDKAssistantMessage = {
     type: 'assistant';
@@ -1816,6 +1869,8 @@ declare type SDKControlPermissionRequest = {
     permission_suggestions?: coreTypes.PermissionUpdate[];
     blocked_path?: string;
     decision_reason?: string;
+    title?: string;
+    display_name?: string;
     tool_use_id: string;
     agent_id?: string;
     description?: string;
@@ -1827,7 +1882,7 @@ declare type SDKControlRequest = {
     request: SDKControlRequestInner;
 };
 
-declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlMcpStatusRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlMcpSetServersRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlRemoteControlRequest | SDKControlSetProactiveRequest | SDKControlGenerateSessionTitleRequest | SDKControlStopTaskRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest;
+declare type SDKControlRequestInner = SDKControlInterruptRequest | SDKControlPermissionRequest | SDKControlInitializeRequest | SDKControlSetPermissionModeRequest | SDKControlSetModelRequest | SDKControlSetMaxThinkingTokensRequest | SDKControlMcpStatusRequest | SDKHookCallbackRequest | SDKControlMcpMessageRequest | SDKControlRewindFilesRequest | SDKControlCancelAsyncMessageRequest | SDKControlMcpSetServersRequest | SDKControlMcpReconnectRequest | SDKControlMcpToggleRequest | SDKControlEndSessionRequest | SDKControlMcpAuthenticateRequest | SDKControlMcpClearAuthRequest | SDKControlMcpOAuthCallbackUrlRequest | SDKControlClaudeAuthenticateRequest | SDKControlClaudeOAuthCallbackRequest | SDKControlRemoteControlRequest | SDKControlSetProactiveRequest | SDKControlGenerateSessionTitleRequest | SDKControlStopTaskRequest | SDKControlApplyFlagSettingsRequest | SDKControlGetSettingsRequest | SDKControlElicitationRequest;
 
 declare type SDKControlResponse = {
     type: 'control_response';
@@ -1994,7 +2049,7 @@ export declare type SdkMcpToolDefinition<Schema extends AnyZodRawShape = AnyZodR
     handler: (args: InferShape<Schema>, extra: unknown) => Promise<CallToolResult>;
 };
 
-export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskProgressMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPromptSuggestionMessage;
+export declare type SDKMessage = SDKAssistantMessage | SDKUserMessage | SDKUserMessageReplay | SDKResultMessage | SDKSystemMessage | SDKPartialAssistantMessage | SDKCompactBoundaryMessage | SDKStatusMessage | SDKAPIRetryMessage | SDKLocalCommandOutputMessage | SDKHookStartedMessage | SDKHookProgressMessage | SDKHookResponseMessage | SDKToolProgressMessage | SDKAuthStatusMessage | SDKTaskNotificationMessage | SDKTaskStartedMessage | SDKTaskProgressMessage | SDKFilesPersistedEvent | SDKToolUseSummaryMessage | SDKRateLimitEvent | SDKElicitationCompleteMessage | SDKPromptSuggestionMessage;
 
 export declare type SDKPartialAssistantMessage = {
     type: 'stream_event';
@@ -2336,6 +2391,10 @@ export declare type SDKUserMessage = {
     isSynthetic?: boolean;
     tool_use_result?: unknown;
     priority?: 'now' | 'next' | 'later';
+    /**
+     * ISO timestamp when the message was created on the originating process. Older emitters omit it; consumers should fall back to receive time.
+     */
+    timestamp?: string;
     uuid?: UUID;
     session_id: string;
 };
@@ -2347,6 +2406,10 @@ export declare type SDKUserMessageReplay = {
     isSynthetic?: boolean;
     tool_use_result?: unknown;
     priority?: 'now' | 'next' | 'later';
+    /**
+     * ISO timestamp when the message was created on the originating process. Older emitters omit it; consumers should fall back to receive time.
+     */
+    timestamp?: string;
     uuid: UUID;
     session_id: string;
     isReplay: true;
@@ -3059,6 +3122,14 @@ export declare interface Settings {
              * Additional paths to deny reading within the sandbox. Merged with paths from Read(...) deny permission rules.
              */
             denyRead?: string[];
+            /**
+             * Paths to re-allow reading within denyRead regions. Takes precedence over denyRead for matching paths.
+             */
+            allowRead?: string[];
+            /**
+             * When true (set in managed settings), only allowRead paths from policySettings are used.
+             */
+            allowManagedReadPathsOnly?: boolean;
         };
         ignoreViolations?: {
             [k: string]: string[];
