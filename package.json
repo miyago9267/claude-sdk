@@ -1,16 +1,22 @@
 {
-  "name": "@lovely-office/sdk",
-  "version": "0.2.0",
+  "name": "@miyago/claude-sdk",
+  "version": "0.3.0",
   "type": "module",
   "private": false,
-  "description": "Forked Claude Agent SDK v0.2.77 with token optimization patches",
+  "description": "Patched Claude Agent SDK with context management, handoff compression, and cache keepalive",
   "main": "src/sdk.mjs",
   "types": "src/sdk.d.ts",
   "exports": {
     ".": {
+      "bun": "./src/index.ts",
       "types": "./src/sdk.d.ts",
       "import": "./src/sdk.mjs",
       "default": "./src/sdk.mjs"
+    },
+    "./context": {
+      "bun": "./src/context-manager.ts",
+      "import": "./src/context-manager.ts",
+      "default": "./src/context-manager.ts"
     },
     "./embed": {
       "types": "./src/embed.d.ts",
