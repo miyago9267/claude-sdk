@@ -18,6 +18,7 @@ import {
   type SDKSession,
   type SDKSessionOptions,
   type SDKResultMessage,
+  type ModelUsage,
 } from './sdk.mjs'
 
 // --- Types ---
@@ -150,7 +151,7 @@ export class ContextManager {
 
     if ('modelUsage' in resultMsg && resultMsg.modelUsage) {
       let totalInput = 0
-      for (const usage of Object.values(resultMsg.modelUsage)) {
+      for (const usage of Object.values(resultMsg.modelUsage) as ModelUsage[]) {
         totalInput += (usage.inputTokens ?? 0)
           + (usage.cacheReadInputTokens ?? 0)
           + (usage.cacheCreationInputTokens ?? 0)
@@ -285,7 +286,7 @@ export class ContextManager {
           const resultMsg = msg as SDKResultMessage
           if ('modelUsage' in resultMsg && resultMsg.modelUsage) {
             let postTokens = 0
-            for (const usage of Object.values(resultMsg.modelUsage)) {
+            for (const usage of Object.values(resultMsg.modelUsage) as ModelUsage[]) {
               postTokens += (usage.inputTokens ?? 0)
                 + (usage.cacheReadInputTokens ?? 0)
                 + (usage.cacheCreationInputTokens ?? 0)

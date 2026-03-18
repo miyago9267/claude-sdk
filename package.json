@@ -1,6 +1,6 @@
 {
   "name": "@miyago/claude-sdk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "private": false,
   "description": "Patched Claude Agent SDK with context management, handoff compression, and cache keepalive",
@@ -15,6 +15,7 @@
     },
     "./context": {
       "bun": "./src/context-manager.ts",
+      "types": "./src/context-manager.ts",
       "import": "./src/context-manager.ts",
       "default": "./src/context-manager.ts"
     },
