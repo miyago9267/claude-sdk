@@ -354,6 +354,9 @@ export class ContextManager {
           }
         }
         this.callbacks.log(`Cache keepalive done (context ~${this.state.contextTokensEstimate} tokens)`)
+
+        // Keepalive 也可能讓 context 超過 watermark，必須檢查
+        await this.checkWatermark()
       } catch (err) {
         this.callbacks.log(`Cache keepalive failed: ${err instanceof Error ? err.message : err}`)
       }
