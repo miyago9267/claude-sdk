@@ -1,12 +1,12 @@
 # SDK 魔改懶人包
 
-> 基於 `@anthropic-ai/claude-agent-sdk` v0.2.77，5 刀改完。
+> 基於 `@anthropic-ai/claude-agent-sdk` v0.2.77，6 刀改完。
 
 ## 一句話
 
 官方 SDK 為單人互動設計，我們拿來跑 7 個 agent 同時運作，所以要砍掉浪費 token 的地方。
 
-## 5 個 Patch
+## 6 個 Patch
 
 ```text
 #   改什麼              為什麼                          省多少
@@ -30,11 +30,17 @@
 5   串流失敗不重送      已收到內容就不重試               避免 2x token
     ~L455529            官方串流斷掉會整個重送
                         但我們已經拿到部分回應了
+
+6   usage 語義硬化      cumulative modelUsage 轉 delta    避免 watermark 失真
+    src/context-manager.ts
+                        result.usage/modelUsage 是 session 累積快照
+                        ContextManager 需先 diff 再估算 context
 ```
 
 ## 改法
 
-全部改在 `src/cli.js`（53 萬行，已 beautify）。
+前 5 個 patch 主要改在 `src/cli.js`（53 萬行，已 beautify）。
+第 6 個 patch 改在 `src/context-manager.ts`，用 cumulative snapshot 做 delta，避免 watermark / keepalive 估算失真。
 
 找到對應行號，改幾個數字或加一個 if 判斷就好。不是大手術。
 

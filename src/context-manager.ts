@@ -57,6 +57,13 @@ export interface ContextState {
   totalCompactions: number
 }
 
+export interface ModelUsageDeltaResult {
+  /** 本次相對於上一筆 cumulative usage 的增量 */
+  deltaUsage: Record<string, ModelUsage>
+  /** 是否偵測到 session / context 已重置 */
+  resetDetected: boolean
+}
+
 export interface ContextManagerCallbacks {
   /** 取得當前 V2 session（如果有） */
   getSession: () => SDKSession | null
@@ -70,6 +77,52 @@ export interface ContextManagerCallbacks {
   model: string
   /** 工作目錄 */
   cwd: string
+}
+
+function cloneModelUsageSnapshot(modelUsage: Record<string, ModelUsage>): Record<string, ModelUsage> {
+  return Object.fromEntries(
+    Object.entries(modelUsage).map(([model, usage]) => [model, { ...usage }]),
+  )
+}
+
+function sumModelUsageTokens(modelUsage: Record<string, ModelUsage>): number {
+  let total = 0
+  for (const usage of Object.values(modelUsage)) {
+    total += (usage.inputTokens ?? 0)
+      + (usage.outputTokens ?? 0)
+      + (usage.cacheReadInputTokens ?? 0)
+      + (usage.cacheCreationInputTokens ?? 0)
+  }
+  return total
+}
+
+export function diffCumulativeModelUsage(
+  currentUsage: Record<string, ModelUsage>,
+  previousUsage: Record<string, ModelUsage> = {},
+): ModelUsageDeltaResult {
+  const resetDetected = sumModelUsageTokens(currentUsage) < sumModelUsageTokens(previousUsage)
+  const deltaUsage: Record<string, ModelUsage> = {}
+
+  for (const [model, usage] of Object.entries(currentUsage)) {
+    const previous = previousUsage[model]
+    if (resetDetected || !previous) {
+      deltaUsage[model] = { ...usage }
+      continue
+    }
+
+    deltaUsage[model] = {
+      inputTokens: Math.max(0, (usage.inputTokens ?? 0) - (previous.inputTokens ?? 0)),
+      outputTokens: Math.max(0, (usage.outputTokens ?? 0) - (previous.outputTokens ?? 0)),
+      cacheReadInputTokens: Math.max(0, (usage.cacheReadInputTokens ?? 0) - (previous.cacheReadInputTokens ?? 0)),
+      cacheCreationInputTokens: Math.max(0, (usage.cacheCreationInputTokens ?? 0) - (previous.cacheCreationInputTokens ?? 0)),
+      webSearchRequests: Math.max(0, (usage.webSearchRequests ?? 0) - (previous.webSearchRequests ?? 0)),
+      costUSD: Math.max(0, (usage.costUSD ?? 0) - (previous.costUSD ?? 0)),
+      contextWindow: usage.contextWindow ?? previous.contextWindow,
+      maxOutputTokens: usage.maxOutputTokens ?? previous.maxOutputTokens,
+    }
+  }
+
+  return { deltaUsage, resetDetected }
 }
 
 // --- Default Handoff Prompt ---
@@ -114,6 +167,7 @@ export class ContextManager {
   private callbacks: ContextManagerCallbacks
   private state: ContextState
   private keepaliveTimer: ReturnType<typeof setTimeout> | null = null
+  private lastModelUsageSnapshot: Record<string, ModelUsage> = {}
 
   constructor(
     config: ContextManagerConfig,
@@ -150,13 +204,15 @@ export class ContextManager {
     this.state.lastApiCallAt = Date.now()
 
     if ('modelUsage' in resultMsg && resultMsg.modelUsage) {
-      let totalInput = 0
-      for (const usage of Object.values(resultMsg.modelUsage) as ModelUsage[]) {
-        totalInput += (usage.inputTokens ?? 0)
-          + (usage.cacheReadInputTokens ?? 0)
-          + (usage.cacheCreationInputTokens ?? 0)
-      }
-      this.state.contextTokensEstimate = totalInput
+      const { deltaUsage, resetDetected } = diffCumulativeModelUsage(
+        resultMsg.modelUsage,
+        this.lastModelUsageSnapshot,
+      )
+      const deltaTokens = sumModelUsageTokens(deltaUsage)
+      this.state.contextTokensEstimate = resetDetected
+        ? deltaTokens
+        : this.state.contextTokensEstimate + deltaTokens
+      this.lastModelUsageSnapshot = cloneModelUsageSnapshot(resultMsg.modelUsage)
     }
   }
 
@@ -177,6 +233,7 @@ export class ContextManager {
     } else {
       await this.callbacks.restartSession()
       this.state.contextTokensEstimate = 0
+      this.lastModelUsageSnapshot = {}
     }
 
     this.state.totalCompactions++
@@ -201,6 +258,7 @@ export class ContextManager {
       this.callbacks.log(`Handoff summary failed, falling back to restart: ${err instanceof Error ? err.message : err}`)
       await this.callbacks.restartSession()
       this.state.contextTokensEstimate = 0
+      this.lastModelUsageSnapshot = {}
       return
     }
 
@@ -214,12 +272,14 @@ export class ContextManager {
       this.callbacks.log(`Handoff summary too short (${summary.length} chars), falling back to restart`)
       await this.callbacks.restartSession()
       this.state.contextTokensEstimate = 0
+      this.lastModelUsageSnapshot = {}
       return
     }
 
     const prevContext = this.state.contextTokensEstimate
     await this.callbacks.restartSession(summary)
     this.state.contextTokensEstimate = 0
+    this.lastModelUsageSnapshot = {}
 
     this.callbacks.log(`Handoff complete: ${prevContext} → ~${Math.round(summary.length / 4)} tokens`)
   }
@@ -276,6 +336,7 @@ export class ContextManager {
     if (!session) {
       await this.callbacks.restartSession()
       this.state.contextTokensEstimate = 0
+      this.lastModelUsageSnapshot = {}
       return
     }
 
@@ -284,16 +345,9 @@ export class ContextManager {
       for await (const msg of session.stream()) {
         if (msg.type === 'result') {
           const resultMsg = msg as SDKResultMessage
-          if ('modelUsage' in resultMsg && resultMsg.modelUsage) {
-            let postTokens = 0
-            for (const usage of Object.values(resultMsg.modelUsage) as ModelUsage[]) {
-              postTokens += (usage.inputTokens ?? 0)
-                + (usage.cacheReadInputTokens ?? 0)
-                + (usage.cacheCreationInputTokens ?? 0)
-            }
-            this.callbacks.log(`Post-compact: ${postTokens} tokens (was ${this.state.contextTokensEstimate})`)
-            this.state.contextTokensEstimate = postTokens
-          }
+          const prevContext = this.state.contextTokensEstimate
+          this.updateFromResult(resultMsg)
+          this.callbacks.log(`Post-compact: ${this.state.contextTokensEstimate} tokens (was ${prevContext})`)
           break
         }
       }
@@ -301,6 +355,7 @@ export class ContextManager {
       this.callbacks.log(`Compact failed, falling back to restart: ${err instanceof Error ? err.message : err}`)
       await this.callbacks.restartSession()
       this.state.contextTokensEstimate = 0
+      this.lastModelUsageSnapshot = {}
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@miyago/claude-sdk",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "type": "module",
   "private": false,
   "description": "Patched Claude Agent SDK with context management, handoff compression, and cache keepalive",

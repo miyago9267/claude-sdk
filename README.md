@@ -5,7 +5,7 @@ Forked `@anthropic-ai/claude-agent-sdk` **v0.2.77** with token optimization patc
 Enables Claude Max subscription as a pollable AI backend — drop-in replacement for the official SDK,
 usable via `query()` API for agent loops, tool use, and browser/embed transports.
 
-## Patches applied (5 surgical patches to cli.js)
+## Patches applied (6 surgical patches to cli.js / context manager)
 
 | # | Line | Description |
 |---|------|-------------|
@@ -14,6 +14,7 @@ usable via `query()` API for agent loops, tool use, and browser/embed transports
 | 3 | ~391538 | Subagent fork: prune fork context messages to last 10 (reduces cold-start token cost) |
 | 4 | ~455180 | Cache editing beta: enabled for `sdk` querySource, not just `repl_main_thread` |
 | 5 | ~455529 | Streaming fallback: skip non-streaming retry if content blocks already received |
+| 6 | src/context-manager.ts | Cumulative `modelUsage` delta tracking for context estimates; docs now state result usage is cumulative |
 
 ## Exports
 
@@ -34,6 +35,9 @@ for await (const msg of query({ prompt: 'Hello', options: { model: 'claude-opus-
   if (msg.type === 'result') console.log(msg.result);
 }
 ```
+
+`result.usage` 和 `result.modelUsage` 都是 session 累積快照，不是 per-turn delta。
+如果你要做視窗計算或 watermark，請先跟上一筆 snapshot 做 diff。
 
 ## Updating from official SDK
 

@@ -2126,7 +2126,15 @@ export declare type SDKResultError = {
     num_turns: number;
     stop_reason: string | null;
     total_cost_usd: number;
+    /**
+     * Session cumulative usage snapshot at the time this result was emitted.
+     * Do not treat this as per-turn delta; diff against the previous snapshot if needed.
+     */
     usage: NonNullableUsage;
+    /**
+     * Session cumulative per-model usage snapshot at the time this result was emitted.
+     * Do not treat this as per-turn delta; diff against the previous snapshot if needed.
+     */
     modelUsage: Record<string, ModelUsage>;
     permission_denials: SDKPermissionDenial[];
     errors: string[];
@@ -2147,7 +2155,15 @@ export declare type SDKResultSuccess = {
     result: string;
     stop_reason: string | null;
     total_cost_usd: number;
+    /**
+     * Session cumulative usage snapshot at the time this result was emitted.
+     * Do not treat this as per-turn delta; diff against the previous snapshot if needed.
+     */
     usage: NonNullableUsage;
+    /**
+     * Session cumulative per-model usage snapshot at the time this result was emitted.
+     * Do not treat this as per-turn delta; diff against the previous snapshot if needed.
+     */
     modelUsage: Record<string, ModelUsage>;
     permission_denials: SDKPermissionDenial[];
     structured_output?: unknown;

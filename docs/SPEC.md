@@ -1,11 +1,23 @@
 # @lovely-office/sdk -- 規格文件
 
-> 從 `@anthropic-ai/claude-agent-sdk` v0.2.77 fork，加上 5 個 token 優化 patch。
+## 狀態
+
+- updated: 2026-03-20
+- status: in_progress
+- scope: cumulative modelUsage semantic hardening
+
+> 從 `@anthropic-ai/claude-agent-sdk` v0.2.77 fork，加上 6 個 token 優化 patch。
 
 ## 概述
 
 把 Claude Max 訂閱變成可輪詢的 AI 後端，用於多 agent 協作迴圈。
-與官方 SDK 完全相容（drop-in replacement），額外加入 5 個精準 patch 減少 token 浪費。
+與官方 SDK 完全相容（drop-in replacement），額外加入 6 個精準 patch 減少 token 浪費。
+
+## 任務
+
+- [x] 釐清 `usage` / `modelUsage` 語義為 session 累積快照，而不是 per-turn delta
+- [x] `ContextManager` 改為以 cumulative snapshot 做 diff 後更新 watermark / keepalive 估算
+- [x] 補上最小可驗證測試與文件說明
 
 ## 架構
 
@@ -121,7 +133,7 @@ claude login
 
 之後 SDK 使用存好的 OAuth token，不需要 API key。
 
-## 5 個 Patch 詳解
+## 6 個 Patch 詳解
 
 ### Patch 1: Context 溢出安全邊距
 
@@ -158,6 +170,13 @@ claude login
 - **原因**: 串流回應中途失敗時，官方 SDK 會用 non-streaming 模式重試整個請求。但如果我們已經收到部分 content（tool call、text），重試等於把同樣的 token 送兩次。這個 patch 在已有部分內容時跳過重試。
 - **節省**: 避免串流失敗時 ~100% 的 token 浪費。
 
+### Patch 6: usage 語義硬化
+
+- **位置**: `src/context-manager.ts`
+- **改動**: `result.usage` / `result.modelUsage` 明確標示為 session 累積快照；`ContextManager` 在估算 context 時先跟上一筆快照做 diff，再累加成 window estimate。
+- **原因**: SDK 的 result snapshot 是累積值，不是單次 turn delta。若整合端把它直接當成 per-turn 使用量，watermark / keepalive / compaction 會被誤導，進而錯估 context 與 token。
+- **效果**: context estimate 只會增加「本次新增的 delta」，session reset 時也能回落，不會把歷史總帳重複計入。
+
 ## 從官方 SDK 更新
 
 ```bash
@@ -166,7 +185,7 @@ claude login
 bash packages/sdk/scripts/patch.sh
 
 # 3. 腳本會 beautify cli.js，然後手動重新套用 patch
-# 4. 測試：bun test packages/sdk/
+# 4. 測試：bun test packages/sdk/ 或至少跑 `bun test src/context-manager.test.ts`
 ```
 
 ## 設計決策
