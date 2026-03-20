@@ -11,4 +11,4 @@ export {
   type ContextState,
   type ModelUsageDeltaResult,
   type ContextManagerCallbacks,
-} from './context-manager.ts'
+} from './context-manager.js'
