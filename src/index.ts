@@ -12,3 +12,6 @@ export {
   type ModelUsageDeltaResult,
   type ContextManagerCallbacks,
 } from './context-manager.js'
+
+// Optimize utilities
+export * from './optimize/index.js'
