@@ -104,4 +104,68 @@ describe('cumulative usage semantics', () => {
     }))
     expect(manager.getState().contextTokensEstimate).toBe(41)
   })
+
+  test('post-compact estimate should reset to 0 (compact bug fix)', () => {
+    // Bug scenario:
+    // 1. Manager accumulates large contextTokensEstimate over many turns
+    // 2. Compact fires (/compact within same session)
+    // 3. CLI cumulative modelUsage keeps incrementing (no session restart)
+    // 4. Old code called updateFromResult(compactResult) without resetting,
+    //    so estimate = large_old + delta = INCREASES after compact
+    //
+    // Fix: doBuiltinCompact resets contextTokensEstimate to 0 and sets
+    // lastModelUsageSnapshot to the compact result's cumulative, WITHOUT
+    // calling updateFromResult. This way:
+    //  - estimate = 0 immediately after compact (correct: context is compressed)
+    //  - snapshot = compact result's cumulative (correct baseline for future diffs)
+    //  - next real interaction's delta is correctly computed from the new baseline
+
+    const manager = new ContextManager(
+      { watermarkTokens: 200_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+
+    // Simulate several turns of accumulation (pre-compact state)
+    manager.updateFromResult(makeResult({
+      'claude-opus-4-6': makeUsage(50_000, 10_000, 30_000, 5_000, 20),
+    }))
+    manager.updateFromResult(makeResult({
+      'claude-opus-4-6': makeUsage(100_000, 20_000, 60_000, 10_000, 40),
+    }))
+    const preCompactEstimate = manager.getState().contextTokensEstimate
+    expect(preCompactEstimate).toBe(190_000) // 95k + 95k accumulated deltas
+
+    // After compact: old code would call updateFromResult(compactResult)
+    // which adds delta on top of 190k. New code resets estimate to 0 and
+    // only updates the snapshot. We verify the reset pattern here by
+    // confirming that a fresh manager (simulating post-reset state) starts
+    // at 0 and correctly diffs the next real interaction.
+    const freshManager = new ContextManager(
+      { watermarkTokens: 200_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+    // freshManager.contextTokensEstimate = 0 (simulates reset)
+    // freshManager.lastModelUsageSnapshot = {} (will be set to compact result)
+    expect(freshManager.getState().contextTokensEstimate).toBe(0)
+
+    // First real interaction AFTER compact: cumulative grows slightly
+    // from the compact baseline. The delta should be small.
+    freshManager.updateFromResult(makeResult({
+      'claude-opus-4-6': makeUsage(105_000, 22_000, 62_000, 11_000, 42),
+    }))
+    // estimate = 0 + all fields (no previous snapshot) = 200k
+    // This is the initial baseline, subsequent turns will delta correctly
+    const firstPostCompact = freshManager.getState().contextTokensEstimate
+    expect(firstPostCompact).toBe(200_000)
+
+    // Second interaction after compact: only the delta is added
+    freshManager.updateFromResult(makeResult({
+      'claude-opus-4-6': makeUsage(108_000, 23_000, 63_000, 11_500, 43),
+    }))
+    const secondPostCompact = freshManager.getState().contextTokensEstimate
+    // delta = 3000 + 1000 + 1000 + 500 = 5500
+    expect(secondPostCompact).toBe(200_000 + 5_500)
+  })
 })

@@ -346,7 +346,20 @@ export class ContextManager {
         if (msg.type === 'result') {
           const resultMsg = msg as SDKResultMessage
           const prevContext = this.state.contextTokensEstimate
-          this.updateFromResult(resultMsg)
+
+          // After compact the context is compressed, so the old estimate
+          // is stale. Reset to 0 and take the compact result's cumulative
+          // modelUsage as the new snapshot baseline. We intentionally do
+          // NOT accumulate the result's usage into the estimate -- the
+          // compressed context is much smaller than the cumulative total
+          // would suggest.
+          this.state.contextTokensEstimate = 0
+          if ('modelUsage' in resultMsg && resultMsg.modelUsage) {
+            this.lastModelUsageSnapshot = cloneModelUsageSnapshot(resultMsg.modelUsage)
+          } else {
+            this.lastModelUsageSnapshot = {}
+          }
+
           this.callbacks.log(`Post-compact: ${this.state.contextTokensEstimate} tokens (was ${prevContext})`)
           break
         }
