@@ -17,7 +17,26 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SDK_MJS = resolve(__dirname, '../node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs')
+
+// Find sdk.mjs: check local node_modules first, then walk up to consumer project
+function findSdkMjs() {
+  const target = 'node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'
+  // 1. Local (dev): ../node_modules/...
+  const local = resolve(__dirname, '..', target)
+  if (existsSync(local)) return local
+  // 2. Consumer project: walk up from script dir until we find node_modules
+  let dir = resolve(__dirname, '..')
+  for (let i = 0; i < 10; i++) {
+    const parent = resolve(dir, '..')
+    if (parent === dir) break
+    dir = parent
+    const candidate = resolve(dir, target)
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+const SDK_MJS = findSdkMjs()
 const BACKUP = SDK_MJS + '.bak'
 
 const mode = process.argv[2] === '--check' ? 'check'
@@ -32,8 +51,8 @@ if (mode === 'revert') {
   process.exit(0)
 }
 
-if (!existsSync(SDK_MJS)) {
-  console.error('xx sdk.mjs not found:', SDK_MJS)
+if (!SDK_MJS) {
+  console.error('xx sdk.mjs not found (searched up from', __dirname, ')')
   process.exit(1)
 }
 
