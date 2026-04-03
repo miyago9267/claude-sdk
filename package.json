@@ -1,6 +1,6 @@
 {
   "name": "@miyago/claude-sdk",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "private": false,
   "description": "Patched Claude Agent SDK — V2 persistent session, context management, cache keepalive, model routing, token tracking",
@@ -28,7 +28,7 @@
     "test": "bun test src/"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.77"
+    "@anthropic-ai/claude-agent-sdk": "0.2.90"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
@@ -37,7 +37,10 @@
     "src/index.ts",
     "src/context-manager.ts",
     "src/optimize/",
-    "scripts/"
+    "scripts/patch-v2.mjs",
+    "scripts/patch-v2.sh",
+    "scripts/patch.sh",
+    "scripts/postinstall.sh"
   ],
   "repository": {
     "type": "git",

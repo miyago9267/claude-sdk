@@ -2,3 +2,6 @@ node_modules/
 *.bak
 *.tgz
 docs/ai/
+
+# AI workspace (not versioned)
+.ai/

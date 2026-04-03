@@ -34,12 +34,12 @@ fi
 
 echo "[@miyago/claude-sdk] postinstall: patching sdk.mjs..."
 
-# ── sdk.mjs V2 patches ──
-bash "$SCRIPT_DIR/patch-v2.sh"
+# ── sdk.mjs V2 patches (regex-based, version-agnostic) ──
+bun "$SCRIPT_DIR/patch-v2.mjs"
 
 echo ""
 ok "postinstall complete"
 echo ""
-echo "  sdk.mjs patches: applied automatically"
-echo "  cli.js patches:  run 'bash scripts/patch.sh' manually (requires beautify)"
+echo "  sdk.mjs: 6 V2 session patches applied"
+echo "  cli.js:  no required patches for v0.2.90+"
 echo ""

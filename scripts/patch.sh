@@ -48,27 +48,30 @@ else
   ok "cli.js already beautified ($LINE_COUNT lines)"
 fi
 
-# ── cli.js Patch 定義 ──
-# 這些 patch 需要在 beautify 後的 cli.js 上手動套用。
-# 每次 SDK 升級後，用錨點索引 (docs/leaarning/sdk-anchor-index-v76.md)
-# 重新定位行號，再手動修改。
+# ── cli.js Patch 狀態（v0.2.90 逆向結果） ──
 #
-# Patch 清單：
-#   1. Context 溢出安全邊距 1000 -> 200
-#   2. 主 Fork Loop 裁剪（只帶最近 5 輪）
-#   3. Subagent Fork Context 裁剪（只帶最近 10 則）
-#   4. SDK 啟用 Prompt Cache（querySource sdk 也啟用）
-#   5. Streaming 失敗不重試（已收到 content 就跳過）
+# v0.2.90 官方修復/架構變更：
+#   1. Context 安全邊距 -- 架構完全重寫為多層閾值，舊 patch 無意義。刪除
+#   2. 主 Fork Loop 裁剪 -- 官方未修，但 subagent 現在啟動前會 compact。可選保留
+#   3. Subagent Context 裁剪 -- 官方加了 compact-before-start。刪除
+#   4. SDK Prompt Cache -- 官方已修（sdk 加入 cache-enabled querySource set）。刪除
+#   5. Streaming 不重試 -- 官方改為 model fallback。刪除
+#
+# 結論：cli.js 不再需要常規 patch。
+#        如需 fork 裁剪（multi-agent 場景），手動在 beautified cli.js 套用。
 
 if [[ "$MODE" == "--check" ]]; then
   echo ""
-  echo "cli.js patches require manual application after beautify."
-  echo "See docs/PATCHES.md for details."
+  echo "cli.js: No required patches for v0.2.90+"
+  echo "  Patch #4 (SDK cache): FIXED by Anthropic"
+  echo "  Patch #1/#5: Architecture changed, patches obsolete"
+  echo "  Patch #2 (fork pruning): Optional for multi-agent"
+  echo "  Patch #3 (subagent pruning): Handled by compact-before-start"
   exit 0
 fi
 
 echo ""
-echo "cli.js beautified and ready for manual patching."
-echo "See docs/PATCHES.md for the 5 patch locations."
+echo "cli.js beautified. No required patches for v0.2.90+."
+echo "See: docs/leaarning/sdk-reverse-engineering-v90.md"
 echo ""
 ok "patch.sh done"
