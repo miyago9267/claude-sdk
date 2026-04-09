@@ -5,7 +5,7 @@ import {
   diffCumulativeModelUsage,
   type ContextManagerCallbacks,
 } from './context-manager.ts'
-import type { SDKResultMessage, ModelUsage } from './sdk.mjs'
+import type { SDKResultMessage, ModelUsage } from '@anthropic-ai/claude-agent-sdk'
 
 function makeUsage(
   inputTokens: number,
