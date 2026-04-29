@@ -20,6 +20,7 @@ import {
 import { ContextManager } from '../context-manager.ts'
 import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
+import { safeCloseSession } from './safe-close.ts'
 import { c } from './colors.ts'
 import {
   discoverCommands,
@@ -51,7 +52,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       getSession: () => session,
       getSessionId: () => sessionId,
       restartSession: async () => {
-        await session.close().catch(() => {})
+        await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
       },
@@ -95,7 +96,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   }
 
   rl.close()
-  await session.close().catch(() => {})
+  await safeCloseSession(session)
 
   async function runTurn(prompt: string): Promise<void> {
     try {
@@ -145,7 +146,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         return false
 
       case '/clear':
-        await session.close().catch(() => {})
+        await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
         manager.updateFromResult(undefined)
@@ -158,7 +159,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
           return false
         }
         sessionOptions = { ...sessionOptions, model: arg }
-        await session.close().catch(() => {})
+        await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
         process.stdout.write(c.green(`model -> ${arg} (session reset)\n`))
@@ -190,7 +191,7 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
       case '/cwd':
         if (arg) {
           sessionOptions = { ...sessionOptions, cwd: arg }
-          await session.close().catch(() => {})
+          await safeCloseSession(session)
           session = unstable_v2_createSession(sessionOptions)
           sessionId = null
           process.stdout.write(c.green(`cwd -> ${arg} (session reset)\n`))

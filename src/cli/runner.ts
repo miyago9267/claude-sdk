@@ -15,6 +15,7 @@ import {
 
 import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
+import { safeCloseSession } from './safe-close.ts'
 
 export interface OneShotOptions {
   prompt: string
@@ -37,6 +38,7 @@ export async function runOneShot(opts: OneShotOptions): Promise<{
 
   let collected = ''
   let result: SDKResultMessage | null = null
+  let streamedText = false
 
   try {
     await session.send(opts.prompt)
@@ -45,7 +47,10 @@ export async function runOneShot(opts: OneShotOptions): Promise<{
         out.write(JSON.stringify(msg) + '\n')
       }
 
-      if (format === 'text') emitText(msg, out, err, (chunk) => { collected += chunk })
+      if (format === 'text') {
+        const wrote = emitText(msg, out, err, (chunk) => { collected += chunk }, streamedText)
+        if (wrote) streamedText = true
+      }
 
       if (msg.type === 'result') {
         result = msg as SDKResultMessage
@@ -55,7 +60,7 @@ export async function runOneShot(opts: OneShotOptions): Promise<{
       }
     }
   } finally {
-    await session.close().catch(() => {})
+    await safeCloseSession(session)
   }
 
   return { result, text: collected }
@@ -66,20 +71,38 @@ function emitText(
   out: { write: (s: string) => void },
   err: { write: (s: string) => void },
   onChunk: (s: string) => void,
-): void {
+  alreadyStreamed: boolean,
+): boolean {
   if (msg.type === 'stream_event') {
     const ev = msg.event
     if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
       out.write(ev.delta.text)
       onChunk(ev.delta.text)
+      return true
     }
     if (ev.type === 'content_block_start' && ev.content_block.type === 'tool_use') {
       err.write(`\n[tool] ${ev.content_block.name}\n`)
     }
-    return
+    return false
   }
   if (msg.type === 'assistant') {
     const am = msg as SDKAssistantMessage
     if (am.error) err.write(`\n[error] ${am.error}\n`)
+    if (alreadyStreamed) return false
+    // Fallback: dump text blocks if no stream_event ever arrived.
+    const blocks = (am.message?.content ?? []) as Array<Record<string, unknown>>
+    let wrote = false
+    for (const b of blocks) {
+      if (b?.type === 'text' && typeof b.text === 'string') {
+        out.write(b.text as string)
+        onChunk(b.text as string)
+        wrote = true
+      }
+      if (b?.type === 'tool_use' && typeof b.name === 'string') {
+        err.write(`\n[tool] ${b.name as string}\n`)
+      }
+    }
+    return wrote
   }
+  return false
 }

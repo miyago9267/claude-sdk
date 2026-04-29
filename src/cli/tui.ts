@@ -29,6 +29,7 @@ import { ContextManager } from '../context-manager.ts'
 import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
 import { discoverCommands, discoverSkills, formatList } from './discover.ts'
+import { safeCloseSession } from './safe-close.ts'
 
 export interface TuiOptions {
   args: ParsedArgs
@@ -117,7 +118,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
       getSession: () => session,
       getSessionId: () => sessionId,
       restartSession: async () => {
-        await session.close().catch(() => {})
+        await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
       },
@@ -161,7 +162,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   })()
 
   await childExit
-  await session.close().catch(() => {})
+  await safeCloseSession(session)
 
   async function handleUIEvent(ev: UIEvent): Promise<void> {
     if (ev.type === 'exit') {
@@ -312,7 +313,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
             ? sessionOptions.systemPrompt
             : selfModSystemPrompt(sessionOptions.systemPrompt, root),
         } as SDKSessionOptions
-        await session.close().catch(() => {})
+        await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
         sendToTui({
@@ -322,7 +323,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         return
       }
       case '/clear':
-        await session.close().catch(() => {})
+        await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
         sendToTui({ type: 'status', message: 'session reset', model: sessionOptions.model })
@@ -333,7 +334,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           return
         }
         sessionOptions = { ...sessionOptions, model: arg }
-        await session.close().catch(() => {})
+        await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
         sendToTui({ type: 'banner', model: arg, cwd: sessionOptions.cwd })
@@ -341,7 +342,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
       case '/cwd':
         if (arg) {
           sessionOptions = { ...sessionOptions, cwd: arg } as SDKSessionOptions
-          await session.close().catch(() => {})
+          await safeCloseSession(session)
           session = unstable_v2_createSession(sessionOptions)
           sessionId = null
           sendToTui({ type: 'banner', model: sessionOptions.model, cwd: arg })
