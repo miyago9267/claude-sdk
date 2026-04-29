@@ -175,11 +175,12 @@ describe('buildTagsResponse', () => {
 })
 
 describe('buildShowResponse', () => {
-  test('always includes tools + thinking + completion + vision capabilities', () => {
+  test('advertises tools so model is visible in Copilot Agent picker', () => {
     const r = buildShowResponse('claude-sonnet-4-6')
     expect(r.capabilities).toEqual([...OLLAMA_CAPABILITIES])
     expect(r.capabilities).toContain('tools')
     expect(r.capabilities).toContain('vision')
+    expect(r.capabilities).toContain('thinking')
   })
 
   test('parameter_size adapts to model tier', () => {

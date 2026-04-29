@@ -20,6 +20,12 @@ import type {
   OllamaToolCall,
 } from './types.ts'
 
+// 'tools' advertised so the model shows up in Copilot's Agent picker. The
+// transport layer drops tool_use blocks (see fromAssistantMessage), so Copilot
+// never sees OpenAI tool_calls and falls back to treating the response as
+// plain chat text. Net effect: Agent UI is reachable, model still self-runs
+// SDK built-in tools against the bridge cwd, but the Agent UI's inline tool
+// review surface stays empty (it has nothing to review).
 export const OLLAMA_CAPABILITIES = ['completion', 'tools', 'thinking', 'vision']
 
 const DEFAULT_DETAILS = {

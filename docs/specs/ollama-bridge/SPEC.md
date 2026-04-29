@@ -59,20 +59,29 @@ owner: miyago
 
 **Status**: accepted
 
-### ADR-3：Tool calling 走 Ollama tools 欄位透傳，server-side 執行
+### ADR-3：Server-side agent loop，動 bridge cwd（不是 IDE workspace）；transport 不 forward `tool_calls`
 
-**Decision**: `/api/chat` 的 request 若帶 `tools` array，視為 client 想看見 tool 過程。Server 端仍由 SDK 自跑（read/write/bash 等內建 tool），但每次出現 `tool_use` block 時，包成 Ollama 的 `message.tool_calls` frame 推給 client。tool_result 不主動推（Copilot 只關心 model 想呼叫什麼，不關心執行結果）。
+**Decision**:
+- V2 session 的 maxTurns 預設 10，allowedTools 不限制（內建 Read/Write/Bash/Edit/Glob/Grep 全部可用）。
+- SDK 在 server 端自跑 agent loop（model emit tool_use → SDK call internal tool → tool_result inject → 下個 turn → ...），動的是 **bridge process 啟動時的 cwd**。
+- Transport 層（`StreamingChunkConverter`）drop 所有 `tool_use` blocks，不 forward 成 OpenAI `tool_calls`。Client 收到的是 model 多 turn 的 narrative text。
+- `/api/show` 的 capabilities 仍 **不帶 `tools`** — Copilot Agent picker 不顯示 Claude，避免 user 誤以為它會動 IDE 真實 workspace 的檔案。
 
-**Rationale**:
-- Copilot Agent 模式必須 `capabilities` 帶 `tools` 才會把 model 顯示在 picker，所以一定要支援。
-- 跟 `./openai` ADR-2 同樣的限制：V2 session 不支援 inject 歷史 tool_result，無法做純 client-side execution。
-- 把 SDK 內建 tool 的成果直接塞回對話流（read 出來的檔案內容、bash 結果），對 Copilot 來說等於 model 在做事，視覺上一致。
+**Rationale (2026-04-29 修正 v3)**:
+- ADR-3 v1（forward tool_calls 給 client 看）：Copilot 找不到對應 tool 報「The tool 'Bash' does not exist」。
+- ADR-3 v2（chat-only，maxTurns 1, allowedTools []）：完全失去編輯/執行能力，與 Miyago 用 Copilot 接 Claude 的初衷相違。
+- 本版 (v3)：保留 V2 session（吃 Max 訂閱）、保留 agent loop 能力、用「bridge cwd 必須是要動的 project root」的操作慣例取代 client-side execution。VSCode file watcher 會 auto-detect file change 顯示 diff，user 自己看 git diff 把關。
+- 真正 client-side execution（model 動 IDE workspace、IDE 提供 review UI）需要繞過 SDK 打 Anthropic Messages API，違反「走 claude-agent-sdk 吃訂閱額度」原則。
 
-**Tool name 衝突處理**:
-- Client 在 request 帶來的 `tools[]` 一律忽略（SDK 已有自己的 toolset），但保留 capability 探測效果
-- Streaming forward 時，tool name 用 SDK 的原名（Read/Write/Bash/...），arguments 用 SDK 給的 input（已經是 object，符合 Ollama 規範）
+**操作慣例**:
+- 在想動的 project root 起 server：`cd ~/Project/foo && claude-sdk --ollama`
+- 多 project 場景要起多個 bridge instance（不同 port），或 user 自己 toggle `claude-sdk` 來回切
 
-**Status**: accepted
+**Trade-off**:
+- 不 advertise `tools` 讓 Agent mode picker 隱藏 Claude，user 在 Copilot 中只能從 Chat mode 用（這是預期 — Agent mode 期待 client tool exec，我們做不到）。
+- Chat mode 下 model 仍會動 file（agent loop 在 server-side 跑完），user 看到 narrative 而不是 inline diff review，需自己 `git diff` 把關。
+
+**Status**: accepted (2026-04-29 修正 v3)
 
 ### ADR-4：Thinking 預設吃掉，request 帶 `think: true` 才 forward
 
@@ -233,3 +242,6 @@ owner: miyago
 | 2026-04-29 | ADR-6 改為「移除 OpenAI adapter」、Phase 1 範圍加上 OpenAI 拆除步驟 | miyago |
 | 2026-04-29 | 加 vision 支援（capabilities 加 `vision`、shared/messages 加 attachments、server 組 ImageBlockParam）；對應 Out of Scope 與 Rabbit Holes 同步更新 | miyago |
 | 2026-04-29 | ADR-1 大改：實測 Copilot OllamaProvider chat 走 `/v1/chat/completions`，bridge 改 hybrid 雙協定（discovery=原生、chat=OpenAI SSE）；新增 `src/ollama/openai-compat.ts` | miyago |
+| 2026-04-29 | ADR-3 大改：拿掉 `tools` capability，純 chat 模式（vision + thinking 保留）。原因：V2 session 內建 tool 動 bridge cwd 不是 IDE workspace；客戶 tool 透傳要繞過 SDK，違反 Max 訂閱限制。maxTurns 從 10 降 1，CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 從 5 拉到 95（避免 thrashing） | miyago |
+| 2026-04-29 | ADR-3 v3：恢復 agent loop（maxTurns 10、allowedTools 不限），但 capability 仍不 advertise `tools` + transport drop tool_calls。Trade-off 改為「動 bridge cwd（不是 IDE workspace）」的操作慣例 — user 在要動的 project root 起 server | miyago |
+| 2026-04-29 | ADR-3 v4：advertise `tools` capability 讓 model 出現在 Copilot Agent picker（user 想用 Agent mode + bypass permission），但仍 drop tool_calls 在 transport — Agent UI 的 inline tool review surface 會空著（無 tool_calls 可 review），對話流仍跑 server-side agent loop | miyago |

@@ -334,29 +334,17 @@ export class StreamingChunkConverter {
         this.shell([{ index: 0, delta: { content: blocks.text }, finish_reason: null }]),
       )
     }
-    for (const call of blocks.toolCalls) {
-      const oaiIdx = this.nextToolCallIndex++
-      chunks.push(
-        this.shell([
-          {
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: oaiIdx,
-                  id: call.id,
-                  type: 'function',
-                  function: { name: call.function.name, arguments: call.function.arguments },
-                },
-              ],
-            },
-            finish_reason: null,
-          },
-        ]),
-      )
+    // tool_calls intentionally dropped (chat-only — see ADR-3). No placeholder
+    // either: agent loops over many turns, often with intermediate "do work,
+    // don't talk" turns. A placeholder per silent turn would spam the client
+    // with `(Model attempted to use a tool; bridge is chat-only.)` lines and
+    // bury the model's actual narrative. The agent loop's final turn almost
+    // always has text — if the entire loop produces zero text the client
+    // gets an empty response, which is the honest outcome.
+    if (blocks.finishReason) {
+      // Drop the tool_calls finish reason since we drop the tool_calls.
+      this.finishReason = blocks.finishReason === 'tool_calls' ? 'stop' : blocks.finishReason
     }
-    if (blocks.finishReason) this.finishReason = blocks.finishReason
-    // Reset for the next turn, in case the SDK switches to stream_event later.
     this.turnEmittedFromStream = false
     return chunks
   }
@@ -370,24 +358,10 @@ export class StreamingChunkConverter {
     if (event.type === 'content_block_start') {
       const block = event.content_block
       if (block.type === 'tool_use') {
-        const oaiIdx = this.nextToolCallIndex++
-        this.toolCallIndexByBlock.set(event.index, oaiIdx)
-        return this.shell([
-          {
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: oaiIdx,
-                  id: block.id,
-                  type: 'function',
-                  function: { name: block.name, arguments: '' },
-                },
-              ],
-            },
-            finish_reason: null,
-          },
-        ])
+        // Chat-only bridge: drop tool_use blocks. See fromAssistantMessage
+        // for the same rationale. Track index so input_json_delta fragments
+        // for this block also get dropped.
+        this.toolCallIndexByBlock.set(event.index, -1)
       }
       return null
     }
@@ -401,27 +375,17 @@ export class StreamingChunkConverter {
         ])
       }
       if (delta.type === 'input_json_delta') {
-        const oaiIdx = this.toolCallIndexByBlock.get(event.index)
-        if (oaiIdx == null) return null
-        this.turnEmittedFromStream = true
-        return this.shell([
-          {
-            index: 0,
-            delta: {
-              tool_calls: [
-                { index: oaiIdx, function: { arguments: delta.partial_json } },
-              ],
-            },
-            finish_reason: null,
-          },
-        ])
+        // Chat-only bridge: tool_use accumulators are no-ops.
+        return null
       }
       return null
     }
 
     if (event.type === 'message_delta') {
       const stopReason = event.delta?.stop_reason as string | null | undefined
-      this.finishReason = mapStopReason(stopReason)
+      const mapped = mapStopReason(stopReason)
+      // tool_calls finish reason flips to 'stop' since we drop tool_use.
+      this.finishReason = mapped === 'tool_calls' ? 'stop' : mapped
       return null
     }
 

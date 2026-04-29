@@ -10,6 +10,15 @@ export {
 } from './server.ts'
 
 export {
+  DEFAULT_POOL_IDLE_TTL_MS,
+  DEFAULT_POOL_MAX,
+  SessionPool,
+  hashHistoryPrefix,
+  type PooledSession,
+  type SessionPoolOptions,
+} from './session-pool.ts'
+
+export {
   OLLAMA_CAPABILITIES,
   buildDoneFrame,
   buildPromptFromOllamaMessages,

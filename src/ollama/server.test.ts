@@ -55,7 +55,7 @@ describe('Ollama bridge endpoints', () => {
     expect(models[0]?.name).toBe('claude-only-one')
   })
 
-  test('POST /api/show returns capabilities including tools', async () => {
+  test('POST /api/show advertises tools + vision + thinking', async () => {
     const app = createOllamaServer()
     const req = new Request('http://x/api/show', {
       method: 'POST',
@@ -64,7 +64,10 @@ describe('Ollama bridge endpoints', () => {
     })
     const { status, body } = await fetchJson(app, req)
     expect(status).toBe(200)
-    expect((body as { capabilities: string[] }).capabilities).toContain('tools')
+    const caps = (body as { capabilities: string[] }).capabilities
+    expect(caps).toContain('tools')
+    expect(caps).toContain('vision')
+    expect(caps).toContain('thinking')
   })
 
   test('POST /api/show 400 on missing model', async () => {

@@ -26,6 +26,7 @@ import { RECOMMENDED_SUBPROCESS_ENV } from '../context-manager.ts'
 import {
   extractAssistantBlocks,
   stripDataUrlPrefix,
+  type HistoryMessage,
   type ImageAttachment,
 } from '../shared/messages.ts'
 import {
@@ -38,6 +39,7 @@ import {
   type OpenAIChatCompletionRequest,
   type OpenAIModelsResponse,
 } from './openai-compat.ts'
+import { SessionPool, hashHistoryPrefix } from './session-pool.ts'
 import {
   buildDoneFrame,
   buildPromptFromOllamaMessages,
@@ -74,11 +76,21 @@ export interface OllamaServerConfig {
   permissionMode?: PermissionMode
   allowDangerouslySkipPermissions?: boolean
   maxTurns?: number
+  /**
+   * Tool allowlist passed to the V2 session. Defaults to `[]` (no tools)
+   * because the bridge is chat-only — see ADR-3. Override only if you know
+   * what you're doing (the bridge cwd is the claude-sdk repo, not the IDE
+   * workspace, so any tool the model uses won't touch user files).
+   */
+  allowedTools?: string[]
   exposedModels?: string[]
   extraSessionOptions?: Partial<SDKSessionOptions>
 }
 
-export function createOllamaServer(config: OllamaServerConfig = {}): Hono {
+export function createOllamaServer(
+  config: OllamaServerConfig = {},
+  pool: SessionPool = new SessionPool(),
+): Hono {
   const app = new Hono()
   app.use('*', cors())
 
@@ -152,9 +164,25 @@ export function createOllamaServer(config: OllamaServerConfig = {}): Hono {
       settingSources: config.settingSources ?? [],
       permissionMode: config.permissionMode ?? 'bypassPermissions',
       allowDangerouslySkipPermissions: config.allowDangerouslySkipPermissions ?? true,
+      // Agent loop allowed: SDK self-dispatches built-in tools (Read/Write/
+      // Bash/Edit/Glob/Grep) against the bridge cwd. The model's tool_use
+      // blocks are dropped at the transport layer (see fromAssistantMessage)
+      // so Copilot only sees the model's narrative text, not OpenAI
+      // tool_calls it can't execute. Bridge cwd === wherever you ran
+      // `claude-sdk --ollama` from — point that at the project you want
+      // edited.
       maxTurns: config.maxTurns ?? 10,
+      ...(config.allowedTools !== undefined ? { allowedTools: config.allowedTools } : {}),
       includePartialMessages: false,
-      env: { ...process.env, ...RECOMMENDED_SUBPROCESS_ENV },
+      env: {
+        ...process.env,
+        ...RECOMMENDED_SUBPROCESS_ENV,
+        // Bridge sessions are short-lived and stateless (per-request); don't
+        // need aggressive autocompact (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=5).
+        // Setting it high prevents the "thrashing: 3 compacts in 3 turns"
+        // failure when Copilot ships ~14K prompt + history each call.
+        CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '95',
+      },
       ...config.extraSessionOptions,
     })
 
@@ -214,36 +242,38 @@ export function createOllamaServer(config: OllamaServerConfig = {}): Hono {
     const requestId = `chatcmpl-${cryptoRandom()}`
     const model = body.model || config.defaultModel || 'claude-sonnet-4-6'
     const history = openAIMessagesToHistory(body.messages)
-    const { systemPrompt, prompt } = buildPromptFromOpenAIMessages(body.messages)
+    const { systemPrompt, prompt: fullPrompt } = buildPromptFromOpenAIMessages(body.messages)
     const attachments = attachmentsFromHistory(history)
     const effectiveSystem = config.systemPromptOverride ?? systemPrompt ?? undefined
 
-    const session = unstable_v2_createSession({
+    const acquired = acquireOrCreate({
+      pool,
+      config,
       model,
-      cwd: config.cwd ?? process.cwd(),
-      systemPrompt: effectiveSystem,
-      settingSources: config.settingSources ?? [],
-      permissionMode: config.permissionMode ?? 'bypassPermissions',
-      allowDangerouslySkipPermissions: config.allowDangerouslySkipPermissions ?? true,
-      maxTurns: config.maxTurns ?? 10,
-      includePartialMessages: body.stream === true,
-      env: { ...process.env, ...RECOMMENDED_SUBPROCESS_ENV },
-      ...config.extraSessionOptions,
+      effectiveSystem,
+      history,
+      fullPrompt,
     })
+    debugLog(
+      `[chat] id=${requestId} model=${model} history_len=${history.length} ` +
+        `pool_hit=${acquired.reused} pool_size=${pool.size()}`,
+    )
 
     if (body.stream) {
       return streamSSE(c, async (stream) => {
         const converter = new StreamingChunkConverter(requestId, model)
         let result: SDKResultMessage | null = null
+        let assistantText = ''
         let chunksEmitted = 0
-        debugLog(`[stream] start id=${requestId} model=${model} prompt_len=${prompt.length} attachments=${attachments.length}`)
         await stream.writeSSE({ data: JSON.stringify(converter.buildRoleChunk()) })
         chunksEmitted++
         try {
-          await session.send(buildSendPayload(prompt, attachments))
-          debugLog(`[stream] send ok, awaiting first SDK message`)
-          for await (const msg of session.stream()) {
-            debugLog(`[stream] sdk msg type=${msg.type}`)
+          await acquired.session.send(buildSendPayload(acquired.promptToSend, attachments))
+          for await (const msg of acquired.session.stream()) {
+            debugLog(`[chat] sdk msg type=${msg.type}`)
+            if (msg.type === 'assistant') {
+              assistantText += extractAssistantBlocks(msg as SDKAssistantMessage).text
+            }
             const chunks = handleStreamingMessage(converter, msg)
             for (const chunk of chunks) {
               await stream.writeSSE({ data: JSON.stringify(chunk) })
@@ -259,41 +289,121 @@ export function createOllamaServer(config: OllamaServerConfig = {}): Hono {
             await stream.writeSSE({ data: JSON.stringify(converter.buildUsageChunk(result)) })
           }
           await stream.writeSSE({ data: '[DONE]' })
-          debugLog(`[stream] done, chunks_emitted=${chunksEmitted + 2}`)
+          rememberSession({ pool, model, history, assistantText, session: acquired.session })
+          debugLog(`[chat] done, chunks=${chunksEmitted + 2} pool_size=${pool.size()}`)
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
-          debugLog(`[stream] ERROR: ${message}`)
+          debugLog(`[chat] ERROR: ${message}`)
+          pool.evictBySession(acquired.session)
           await stream.writeSSE({
             data: JSON.stringify({ error: { message, type: 'server_error' } }),
           })
-        } finally {
-          safeClose(session)
         }
       })
     }
 
     const assistantMsgs: SDKAssistantMessage[] = []
     let result: SDKResultMessage | null = null
+    let assistantText = ''
     try {
-      await session.send(buildSendPayload(prompt, attachments))
-      for await (const msg of session.stream()) {
-        if (msg.type === 'assistant') assistantMsgs.push(msg as SDKAssistantMessage)
+      await acquired.session.send(buildSendPayload(acquired.promptToSend, attachments))
+      for await (const msg of acquired.session.stream()) {
+        if (msg.type === 'assistant') {
+          const m = msg as SDKAssistantMessage
+          assistantMsgs.push(m)
+          assistantText += extractAssistantBlocks(m).text
+        }
         if (msg.type === 'result') {
           result = msg as SDKResultMessage
           break
         }
       }
     } catch (err) {
-      safeClose(session)
+      pool.evictBySession(acquired.session)
       const message = err instanceof Error ? err.message : String(err)
       return c.json({ error: { message, type: 'server_error' } }, 500)
     }
-    safeClose(session)
+    rememberSession({ pool, model, history, assistantText, session: acquired.session })
 
     return c.json(buildNonStreamingResponse({ id: requestId, model, assistantMsgs, result }))
   })
 
   return app
+}
+
+/**
+ * Look the session up in the pool by client-history prefix hash. On hit,
+ * returns the existing session and the prompt becomes the *last user message
+ * only* — the session already holds the prior turns. On miss, spawns a fresh
+ * session and the prompt is the full transcript built from history.
+ */
+function acquireOrCreate(args: {
+  pool: SessionPool
+  config: OllamaServerConfig
+  model: string
+  effectiveSystem: string | undefined
+  history: HistoryMessage[]
+  fullPrompt: string
+}): { session: SDKSession; promptToSend: string; reused: boolean } {
+  const { pool, config, model, effectiveSystem, history, fullPrompt } = args
+  const lastUserIdx = lastIndexOf(history, (m) => m.role === 'user')
+  const prefix = lastUserIdx >= 0 ? history.slice(0, lastUserIdx) : history
+  const prefixHash = hashHistoryPrefix(model, prefix)
+  const existing = pool.acquire(prefixHash)
+  if (existing) {
+    const lastUser = lastUserIdx >= 0 ? history[lastUserIdx] : undefined
+    const promptToSend =
+      lastUser && typeof lastUser.content === 'string' ? lastUser.content : ''
+    return { session: existing, promptToSend, reused: true }
+  }
+  const session = unstable_v2_createSession({
+    model,
+    cwd: config.cwd ?? process.cwd(),
+    systemPrompt: effectiveSystem,
+    settingSources: config.settingSources ?? [],
+    permissionMode: config.permissionMode ?? 'bypassPermissions',
+    allowDangerouslySkipPermissions: config.allowDangerouslySkipPermissions ?? true,
+    maxTurns: config.maxTurns ?? 10,
+    ...(config.allowedTools !== undefined ? { allowedTools: config.allowedTools } : {}),
+    includePartialMessages: true,
+    env: {
+      ...process.env,
+      ...RECOMMENDED_SUBPROCESS_ENV,
+      // Bridge sessions hold full conversation state across pool reuses;
+      // aggressive autocompact (=5) thrashes when Copilot ships big prompts.
+      // 95 = effectively disabled.
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '95',
+    },
+    ...config.extraSessionOptions,
+  })
+  return { session, promptToSend: fullPrompt, reused: false }
+}
+
+/**
+ * Re-key the session in the pool under the post-turn prefix hash so the next
+ * request's prefix lookup hits. assistantText is the accumulated visible text
+ * for the just-finished turn (matches the client's view of the assistant
+ * message — tool_use blocks are intentionally stripped).
+ */
+function rememberSession(args: {
+  pool: SessionPool
+  model: string
+  history: HistoryMessage[]
+  assistantText: string
+  session: SDKSession
+}): void {
+  const { pool, model, history, assistantText, session } = args
+  const nextPrefix: HistoryMessage[] = [
+    ...history,
+    { role: 'assistant', content: assistantText },
+  ]
+  const nextHash = hashHistoryPrefix(model, nextPrefix)
+  pool.register(nextHash, session)
+}
+
+function lastIndexOf<T>(arr: T[], pred: (v: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i]!)) return i
+  return -1
 }
 
 /**
@@ -395,7 +505,11 @@ export function serveOllamaBridge(args: {
 } = {}): ServeHandle {
   const desiredPort = args.port ?? Number(process.env.PORT ?? DEFAULT_OLLAMA_PORT)
   const hostname = args.hostname ?? '127.0.0.1'
-  const app = createOllamaServer(args.config ?? {})
+
+  // Pool lives across the lifetime of the bridge process. closeAll() on
+  // SIGINT / SIGTERM / explicit stop() so child processes don't dangle.
+  const pool = new SessionPool()
+  const app = createOllamaServer(args.config ?? {}, pool)
 
   // Disable Bun's default 10s idleTimeout — Claude cold start + thinking can
   // sit silent for tens of seconds before the first SSE chunk lands, and any
@@ -415,9 +529,16 @@ export function serveOllamaBridge(args: {
     }
   }
 
+  const stop = () => {
+    pool.closeAll()
+    server.stop()
+  }
+  process.once('SIGINT', stop)
+  process.once('SIGTERM', stop)
+
   return {
     app,
-    stop: () => server.stop(),
+    stop,
     url: `http://${hostname}:${actualPort}`,
     port: actualPort,
   }

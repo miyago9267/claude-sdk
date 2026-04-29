@@ -197,7 +197,7 @@ describe('StreamingChunkConverter', () => {
     expect(c?.choices[0]?.delta.content).toBe('foo')
   })
 
-  test('tool_use input_json_delta accumulates under same OpenAI tool_call index', () => {
+  test('tool_use stream events are dropped (chat-only bridge)', () => {
     const conv = new StreamingChunkConverter('id', 'm')
     const start = conv.fromStreamEvent({
       type: 'content_block_start',
@@ -209,28 +209,18 @@ describe('StreamingChunkConverter', () => {
       index: 0,
       delta: { type: 'input_json_delta', partial_json: '{"cmd":' },
     } as never)
-    const d2 = conv.fromStreamEvent({
-      type: 'content_block_delta',
-      index: 0,
-      delta: { type: 'input_json_delta', partial_json: '"ls"}' },
-    } as never)
-    expect(start?.choices[0]?.delta.tool_calls?.[0]).toMatchObject({
-      index: 0,
-      id: 'tu',
-      function: { name: 'bash', arguments: '' },
-    })
-    expect(d1?.choices[0]?.delta.tool_calls?.[0]?.function?.arguments).toBe('{"cmd":')
-    expect(d2?.choices[0]?.delta.tool_calls?.[0]?.function?.arguments).toBe('"ls"}')
+    expect(start).toBeNull()
+    expect(d1).toBeNull()
   })
 
-  test('message_delta sets finishReason for buildFinishChunk', () => {
+  test('message_delta with tool_use stop_reason flips to stop (tool_calls dropped)', () => {
     const conv = new StreamingChunkConverter('id', 'm')
     conv.fromStreamEvent({
       type: 'message_delta',
       delta: { stop_reason: 'tool_use' },
       usage: {} as never,
     } as never)
-    expect(conv.buildFinishChunk().choices[0]?.finish_reason).toBe('tool_calls')
+    expect(conv.buildFinishChunk().choices[0]?.finish_reason).toBe('stop')
   })
 
   test('buildFinishChunk falls back to stop when no message_delta', () => {
@@ -238,7 +228,7 @@ describe('StreamingChunkConverter', () => {
     expect(conv.buildFinishChunk().choices[0]?.finish_reason).toBe('stop')
   })
 
-  test('fromAssistantMessage synthesises content+tool_call deltas as fallback', () => {
+  test('fromAssistantMessage emits text only; tool_use blocks dropped (chat-only)', () => {
     const conv = new StreamingChunkConverter('id', 'm')
     const msg = {
       type: 'assistant' as const,
@@ -251,14 +241,25 @@ describe('StreamingChunkConverter', () => {
       },
     } as unknown as Parameters<typeof conv.fromAssistantMessage>[0]
     const chunks = conv.fromAssistantMessage(msg)
-    expect(chunks).toHaveLength(2)
+    expect(chunks).toHaveLength(1)
     expect(chunks[0]?.choices[0]?.delta.content).toBe('hello world')
-    expect(chunks[1]?.choices[0]?.delta.tool_calls?.[0]).toMatchObject({
-      index: 0,
-      id: 'tu_1',
-      function: { name: 'bash', arguments: '{"cmd":"ls"}' },
-    })
-    expect(conv.buildFinishChunk().choices[0]?.finish_reason).toBe('tool_calls')
+    expect(chunks[0]?.choices[0]?.delta.tool_calls).toBeUndefined()
+    // tool_calls finish_reason flips to 'stop' because we dropped the tool calls
+    expect(conv.buildFinishChunk().choices[0]?.finish_reason).toBe('stop')
+  })
+
+  test('fromAssistantMessage emits nothing when assistant turn is pure tool_use', () => {
+    // Mid-agent-loop "silent work" turns must not spam the client with
+    // placeholder messages. Final-turn text comes through later.
+    const conv = new StreamingChunkConverter('id', 'm')
+    const msg = {
+      type: 'assistant' as const,
+      message: {
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { cmd: 'ls' } }],
+        stop_reason: 'tool_use',
+      },
+    } as unknown as Parameters<typeof conv.fromAssistantMessage>[0]
+    expect(conv.fromAssistantMessage(msg)).toEqual([])
   })
 
   test('multi-turn agent: every assistant message gets its content emitted', () => {

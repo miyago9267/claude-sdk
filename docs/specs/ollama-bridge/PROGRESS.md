@@ -5,13 +5,25 @@
 ## Phases
 
 - [x] Phase 1：Skeleton + non-streaming + 移除 OpenAI adapter
-- [ ] Phase 2：NDJSON streaming + session pool
-- [ ] Phase 3：Tool calling + thinking forwarding
-- [ ] Phase 4：CLI integration + Copilot E2E（CLI 已順便做掉，剩實機 E2E）
+- [x] Phase 2：SSE streaming（`/v1/chat/completions`）+ session pool by client-history hash
+- [x] Phase 3：~~Tool calling forwarding~~（重新定位：transport drop tool_use，server-side 跑 agent loop 動 bridge cwd；vision + thinking 已透傳）
+- [x] Phase 4：CLI integration（`--ollama` flag）+ Copilot E2E（reload window 後 picker 顯示 Claude，chat / agent mode 都可用）
 
 ## Status
 
-**Current**: Phase 1 完成。`bun test` 74/74 全綠，`/api/version` `/api/tags` `/api/show` 已 smoke test 過；non-streaming `/api/chat` 路徑寫好但需要實際 V2 session 才能跑通，等 Miyago 起 server 自己驗。Phase 2（streaming + session pool）等 Phase 1 確認接得上 Copilot 後再開。
+**Current**: 全 Phase 完成。140 test pass。
+- Discovery 走 Ollama 原生（`/api/{tags,show,version}`）
+- Chat 走 OpenAI compat（`/v1/chat/completions` SSE）
+- Capabilities advertise `tools, thinking, vision`，但 transport drop tool_calls（Agent UI 無 inline review，但能進）
+- Session pool by client-history prefix hash（max 50 / TTL 30min / SIGINT closeAll）
+- V2 session agent loop 在 bridge cwd 跑 SDK 內建 tool（Read/Write/Bash/Edit/Glob/Grep）
+- Vision: base64 → Anthropic ImageBlockParam，magic-byte media type detect
+
+**操作慣例**: 在要動的 project root 起 `claude-sdk --ollama`；VSCode 開同 project 用 Copilot Chat / Agent。
+
+**已知限制**:
+- 看不到 inline diff review（要靠 git diff），Copilot Agent 的 tool review surface 空著
+- Bridge cwd ≠ IDE workspace（沒辦法跨 project；多 project 要起多個 instance）
 
 **Blockers**: 無。
 
@@ -26,6 +38,7 @@
 - 2026-04-29 — Lesson: Copilot Ollama provider 對 server version 有 floor（>= 0.6.4），BRIDGE_VERSION 改 0.10.0 純 semver
 - 2026-04-29 — Lesson: Copilot UI capability 顯示靠 in-memory `_modelCache`，重啟 server 不夠，要 reload window 或重 add provider
 - 2026-04-29 — **架構修正**：Copilot OllamaProvider chat 走 OpenAI compat (`/v1/chat/completions`)，不是 Ollama 原生 `/api/chat`。Bridge 改 hybrid 雙協定。從 git afc1537 復活 OpenAI adapter 的 SSE converter / non-stream builder 進 `src/ollama/openai-compat.ts`
+- 2026-04-29 — Phase 2 完成：session pool by client-history prefix hash（LRU max 50, idle TTL 30min, SIGINT closeAll）。命中時只 send last user message + reuse 既有 V2 session，cold start + cache 紅利兩個一起拿
 
 ## Notes
 
