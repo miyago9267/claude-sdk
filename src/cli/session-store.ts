@@ -18,6 +18,8 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
+import { OfficialResolver } from './official-session.ts'
+
 export type Role = 'user' | 'assistant'
 
 export interface Turn {
@@ -42,23 +44,36 @@ interface IndexFile {
 export interface SessionStoreOptions {
   /** Override base dir, useful for tests. Default ~/.claude-sdk/sessions. */
   dir?: string
+  /** Mirror writes to ~/.claude/projects/<encoded-cwd>/<id>.jsonl in the
+   * official Claude Code schema so `claude -r <id>` can resume the same
+   * conversation. Default: true. */
+  mirror?: boolean
+  /** Resolver to use when mirror=true. Override for tests. */
+  official?: OfficialResolver
 }
 
 const INDEX_NAME = '_index.json'
 
 export class SessionStore {
   private readonly dir: string
+  private readonly mirror: boolean
+  private readonly official: OfficialResolver
 
   constructor(opts: SessionStoreOptions = {}) {
     this.dir = opts.dir ?? defaultStoreDir()
+    this.mirror = opts.mirror ?? true
+    this.official = opts.official ?? new OfficialResolver()
     if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true })
   }
 
-  /** Create a fresh logical session and persist its initial metadata entry. */
-  create(meta: { cwd: string; model: string }): SessionMeta {
+  /** Create a fresh logical session and persist its initial metadata entry.
+   * If `id` is provided, reuse it instead of generating a new UUID — used
+   * when importing an existing official session so the same id chains both
+   * local and official jsonl. */
+  create(meta: { cwd: string; model: string; id?: string }): SessionMeta {
     const now = Math.floor(Date.now() / 1000)
     const entry: SessionMeta = {
-      id: randomUUID(),
+      id: meta.id ?? randomUUID(),
       cwd: meta.cwd,
       model: meta.model,
       createdAt: now,
@@ -66,9 +81,13 @@ export class SessionStore {
       turnCount: 0,
     }
     const idx = this.readIndex()
-    idx.sessions.push(entry)
-    this.writeIndex(idx)
-    writeFileSync(this.jsonlPath(entry.id), '')
+    if (!idx.sessions.find((s) => s.id === entry.id)) {
+      idx.sessions.push(entry)
+      this.writeIndex(idx)
+    }
+    if (!existsSync(this.jsonlPath(entry.id))) {
+      writeFileSync(this.jsonlPath(entry.id), '')
+    }
     return entry
   }
 
@@ -84,6 +103,21 @@ export class SessionStore {
       meta.lastUsedAt = ts
       meta.turnCount += 1
       this.writeIndex(idx)
+    }
+
+    if (this.mirror && meta) {
+      try {
+        this.official.appendOfficialTurn({
+          cwd: meta.cwd,
+          sessionId: id,
+          role: turn.role,
+          text: turn.content,
+          model: meta.model,
+        })
+      } catch {
+        // Mirror is best-effort — failures here shouldn't break the local
+        // canonical write that already succeeded.
+      }
     }
   }
 
@@ -146,6 +180,24 @@ export class SessionStore {
       block = block.slice(block.length - maxChars)
     }
     return block + '\n\n'
+  }
+
+  /** Bulk-load turns into the local jsonl without triggering the official
+   * mirror (used to import an existing official session whose jsonl is
+   * already authoritative). */
+  importRawTurns(id: string, turns: Turn[]): void {
+    if (turns.length === 0) return
+    const path = this.jsonlPath(id)
+    const lines = turns.map((t) => JSON.stringify(t)).join('\n') + '\n'
+    appendFileSync(path, lines)
+    const idx = this.readIndex()
+    const meta = idx.sessions.find((s) => s.id === id)
+    if (meta) {
+      meta.turnCount += turns.length
+      const lastTs = turns[turns.length - 1]?.ts
+      if (typeof lastTs === 'number') meta.lastUsedAt = lastTs
+      this.writeIndex(idx)
+    }
   }
 
   /** Bump lastUsedAt without writing a turn (e.g. on session start). */

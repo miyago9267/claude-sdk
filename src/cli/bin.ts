@@ -16,6 +16,7 @@ import { HELP_TEXT, parseArgs } from './args.ts'
 import { runOneShot } from './runner.ts'
 import { runRepl } from './repl.ts'
 import { SessionStore, type SessionMeta } from './session-store.ts'
+import { OfficialResolver, type OfficialMeta } from './official-session.ts'
 
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return ''
@@ -55,23 +56,62 @@ async function main(): Promise<void> {
 
   warnUnsupported(args)
 
-  // Session store + resume resolution.
-  const store = new SessionStore()
+  // Session store + resume resolution. We accept resume targets from two
+  // sources — our own ~/.claude-sdk/sessions/ (local store) and the
+  // official ~/.claude/projects/ layout. Whichever is most recent / matches
+  // wins; an official-only hit is mirrored into the local index so the same
+  // id chains both files going forward.
+  const official = new OfficialResolver()
+  const store = new SessionStore({ official })
+  const cwd = args.cwd ?? process.cwd()
   let resumeMeta: SessionMeta | null = null
+  let resumeSource: 'local' | 'official' | null = null
+  let officialMeta: OfficialMeta | null = null
+
   if (args.resume) {
     resumeMeta = store.get(args.resume)
-    if (!resumeMeta) {
-      process.stderr.write(`claude-sdk: no stored session with id "${args.resume}"\n`)
-      process.exit(2)
+    if (resumeMeta) {
+      resumeSource = 'local'
+    } else {
+      officialMeta = official.findById(args.resume)
+      if (officialMeta) {
+        resumeSource = 'official'
+      } else {
+        process.stderr.write(`claude-sdk: no session with id "${args.resume}" (checked local + official)\n`)
+        process.exit(2)
+      }
     }
   } else if (args.continue) {
-    resumeMeta = store.findLatestByCwd(args.cwd ?? process.cwd())
-    if (!resumeMeta) {
+    const local = store.findLatestByCwd(cwd)
+    const off = official.findLatestByCwd(cwd)
+    if (!local && !off) {
       process.stderr.write(`claude-sdk: no previous session in this cwd to continue\n`)
       process.exit(2)
     }
+    if (local && (!off || local.lastUsedAt >= off.lastUsedAt)) {
+      resumeMeta = local
+      resumeSource = 'local'
+    } else if (off) {
+      officialMeta = off
+      resumeSource = 'official'
+    }
   }
-  if (resumeMeta) {
+
+  // Promote an official-only session into the local index + jsonl so the
+  // history-prefix path reads from one canonical place. The id is shared,
+  // so subsequent turns mirror back to the same official jsonl.
+  if (resumeSource === 'official' && officialMeta) {
+    resumeMeta = store.create({
+      cwd: officialMeta.cwd || cwd,
+      model: officialMeta.model ?? args.model ?? 'claude-sonnet-4-6',
+      id: officialMeta.id,
+    })
+    const officialTurns = official.loadTurns(officialMeta.jsonlPath)
+    store.importRawTurns(officialMeta.id, officialTurns)
+    process.stderr.write(
+      `claude-sdk: importing official session ${officialMeta.id} (${officialTurns.length} turns)\n`,
+    )
+  } else if (resumeMeta) {
     process.stderr.write(
       `claude-sdk: resuming session ${resumeMeta.id} (${resumeMeta.turnCount} turns)\n`,
     )
