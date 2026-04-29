@@ -11,7 +11,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
-	"os"
 	"sync"
 )
 
@@ -62,7 +61,7 @@ type writer struct {
 	out io.Writer
 }
 
-func newWriter() *writer { return &writer{out: os.Stdout} }
+func newWriter(out io.Writer) *writer { return &writer{out: out} }
 
 func (w *writer) send(ev UIEvent) {
 	w.mu.Lock()

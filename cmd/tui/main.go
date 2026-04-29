@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -16,18 +17,34 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// IPC fd layout (set up by the TS host):
+//   fd 0/1/2 : real TTY (so bubbletea sees raw key events)
+//   fd 3     : NDJSON HostEvent stream (TS -> us)
+//   fd 4     : NDJSON UIEvent stream  (us -> TS)
+const (
+	fdHostIn = 3
+	fdUIOut  = 4
+)
+
 func main() {
-	model := newModel()
+	hostIn := os.NewFile(fdHostIn, "host-events")
+	uiOut := os.NewFile(fdUIOut, "ui-events")
+	if hostIn == nil || uiOut == nil {
+		fmt.Fprintln(os.Stderr, "tui: missing IPC fds 3/4 — run via `claude-sdk --tui`")
+		os.Exit(2)
+	}
+
+	model := newModel(uiOut)
 	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseAllMotion())
-	go pumpHostEvents(prog)
+	go pumpHostEvents(prog, hostIn)
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui:", err)
 		os.Exit(1)
 	}
 }
 
-func pumpHostEvents(p *tea.Program) {
-	for ev := range readEvents(os.Stdin) {
+func pumpHostEvents(p *tea.Program, in *os.File) {
+	for ev := range readEvents(in) {
 		p.Send(hostMsg{ev: ev})
 	}
 	p.Send(hostMsg{ev: HostEvent{Type: "__eof__"}})
@@ -62,7 +79,7 @@ type model struct {
 	ready      bool
 }
 
-func newModel() *model {
+func newModel(uiOut io.Writer) *model {
 	in := textinput.New()
 	in.Placeholder = "Type a prompt or /help. Ctrl+C exits."
 	in.Focus()
@@ -70,7 +87,7 @@ func newModel() *model {
 	in.Prompt = "> "
 	return &model{
 		input: in,
-		out:   newWriter(),
+		out:   newWriter(uiOut),
 	}
 }
 

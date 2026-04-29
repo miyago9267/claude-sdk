@@ -11,8 +11,9 @@
  */
 
 import { existsSync } from 'node:fs'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
+import type { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -76,10 +77,23 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   let sessionId: string | null = null
   let busy = false
 
-  const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'inherit'] })
+  // stdin/stdout/stderr stay on the real TTY so bubbletea sees raw key events.
+  // FD 3 carries HostEvents from us into the binary; FD 4 carries UIEvents back.
+  const child = spawn(binary, [], {
+    stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
+  })
+
+  const hostOut = (child.stdio[3] ?? null) as Writable | null
+  const uiIn = (child.stdio[4] ?? null) as Readable | null
+  if (!hostOut || !uiIn) {
+    process.stderr.write('claude-sdk: failed to open IPC fds 3/4 to TUI binary\n')
+    child.kill()
+    return
+  }
+
   const sendToTui = (ev: HostEvent) => {
-    if (!child.stdin || child.stdin.destroyed) return
-    child.stdin.write(JSON.stringify(ev) + '\n')
+    if (hostOut.destroyed) return
+    hostOut.write(JSON.stringify(ev) + '\n')
   }
 
   const log = (line: string) => sendToTui({ type: 'status', message: line })
@@ -115,7 +129,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   })
 
   ;(async () => {
-    for await (const ev of readNdjson(child)) {
+    for await (const ev of readNdjson(uiIn)) {
       try {
         await handleUIEvent(ev)
       } catch (err) {
@@ -250,11 +264,9 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   }
 }
 
-async function* readNdjson(child: ChildProcess): AsyncGenerator<UIEvent> {
-  const stdout = child.stdout
-  if (!stdout) return
+async function* readNdjson(stream: Readable): AsyncGenerator<UIEvent> {
   let buf = ''
-  for await (const chunk of stdout as AsyncIterable<Buffer>) {
+  for await (const chunk of stream as AsyncIterable<Buffer>) {
     buf += chunk.toString('utf8')
     let idx
     while ((idx = buf.indexOf('\n')) >= 0) {
