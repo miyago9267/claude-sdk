@@ -16,18 +16,20 @@ import (
 
 // HostEvent is anything the TS host pushes us about the current LLM session.
 type HostEvent struct {
-	Type           string  `json:"type"`
-	Text           string  `json:"text,omitempty"`
-	Model          string  `json:"model,omitempty"`
-	Cwd            string  `json:"cwd,omitempty"`
-	ToolName       string  `json:"name,omitempty"`
-	ToolID         string  `json:"id,omitempty"`
-	SessionID      string  `json:"sessionId,omitempty"`
-	ContextTokens  int     `json:"contextTokens,omitempty"`
-	CostUSD        float64 `json:"costUSD,omitempty"`
-	Compactions    int     `json:"compactions,omitempty"`
-	Message        string  `json:"message,omitempty"`
-	Reason         string  `json:"reason,omitempty"`
+	Type          string  `json:"type"`
+	Text          string  `json:"text,omitempty"`
+	Model         string  `json:"model,omitempty"`
+	Cwd           string  `json:"cwd,omitempty"`
+	ToolName      string  `json:"name,omitempty"`
+	ToolID        string  `json:"id,omitempty"`
+	ToolInput     string  `json:"input,omitempty"`
+	OK            *bool   `json:"ok,omitempty"`
+	SessionID     string  `json:"sessionId,omitempty"`
+	ContextTokens int     `json:"contextTokens,omitempty"`
+	CostUSD       float64 `json:"costUSD,omitempty"`
+	Compactions   int     `json:"compactions,omitempty"`
+	Message       string  `json:"message,omitempty"`
+	Reason        string  `json:"reason,omitempty"`
 }
 
 // HostEventTypes documents every value of HostEvent.Type. Comments here are
@@ -36,11 +38,13 @@ const (
 	EvtBanner       = "banner"        // initial header info (model, cwd)
 	EvtTextDelta    = "text-delta"    // assistant text fragment
 	EvtToolUse      = "tool-use"      // tool started server-side
+	EvtToolResult   = "tool-result"   // server-side tool finished
 	EvtAssistantEnd = "assistant-end" // current assistant turn finished
 	EvtResult       = "result"        // turn final, includes usage
 	EvtError        = "error"         // surface error
 	EvtStatus       = "status"        // pushed status snapshot
 	EvtBusy         = "busy"          // host is mid-turn (true/false via Reason)
+	EvtThinking     = "thinking"      // model is in thinking phase
 )
 
 // UIEvent is anything we send back to the TS host (typed user actions).

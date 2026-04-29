@@ -198,6 +198,7 @@ Slash commands:
   /clear           drop the current session and start a new one
   /model [id]      show or switch model (resets session)
   /cwd   [path]    show or switch working dir (resets session)
+  /self  [on|off]  toggle self-edit mode (TUI only — REPL ignores)
   /compact         force ContextManager to run compact now
   /status          session id, cwd, context tokens, last turn cost
 `

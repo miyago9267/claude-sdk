@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -92,28 +93,41 @@ type model struct {
 	state uiState
 
 	transcript []string
-	vp         viewport.Model
-	input      textarea.Model
-	out        *writer
-	ready      bool
+	// toolByID lets a tool-result event find the transcript line carrying
+	// the matching tool-use marker so we can append `⎿ result` under it
+	// instead of dropping the result on a fresh line.
+	toolByID map[string]int
+
+	vp      viewport.Model
+	input   textarea.Model
+	spin    spinner.Model
+	out     *writer
+	ready   bool
 }
 
 func newModel(uiOut io.Writer) *model {
 	ta := textarea.New()
-	ta.Placeholder = "Ask Claude anything. Enter to send, Ctrl+J newline."
+	ta.Placeholder = "Ask Claude. Enter to send · Ctrl+J newline · /help"
 	ta.Prompt = "│ "
 	ta.CharLimit = 8192
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
 	ta.Focus()
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+
+	sp := spinner.New()
+	sp.Spinner = spinner.MiniDot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+
 	return &model{
-		input: ta,
-		out:   newWriter(uiOut),
+		input:    ta,
+		spin:     sp,
+		out:      newWriter(uiOut),
+		toolByID: map[string]int{},
 	}
 }
 
-func (m *model) Init() tea.Cmd { return textarea.Blink }
+func (m *model) Init() tea.Cmd { return tea.Batch(textarea.Blink, m.spin.Tick) }
 
 // ----------------------------------------------------------------------------
 
@@ -124,6 +138,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		m.layout()
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		m.refreshFooter()
+		return m, cmd
 
 	case hostMsg:
 		return m.applyHostEvent(msg.ev)
@@ -184,8 +204,22 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 	case EvtTextDelta:
 		m.appendInline(ev.Text)
 	case EvtToolUse:
-		m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(
-			fmt.Sprintf("  [tool] %s", ev.ToolName)))
+		line := renderToolUse(ev.ToolName, ev.ToolInput)
+		m.appendLine(line)
+		if ev.ToolID != "" {
+			m.toolByID[ev.ToolID] = len(m.transcript) - 1
+		}
+	case EvtToolResult:
+		ok := ev.OK == nil || *ev.OK
+		summary := singleLine(ev.Message, 100)
+		marker := "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("⎿ ")
+		body := summary
+		if !ok {
+			body = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render(summary)
+		} else {
+			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(summary)
+		}
+		m.appendLine(marker + body)
 	case EvtAssistantEnd:
 		m.appendLine("")
 		m.state = stateIdle
@@ -316,15 +350,33 @@ func (m *model) refreshHeader() {
 
 func (m *model) refreshFooter() {
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	if m.state == stateBusy {
-		style = style.Foreground(lipgloss.Color("214"))
-	}
 	hint := "Enter send · Ctrl+J newline · /help · Ctrl+C exit"
 	if m.state == stateBusy {
-		hint = "thinking… · Ctrl+C cancels"
+		hint = m.spin.View() + " " +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("thinking…") +
+			"  ·  Ctrl+C cancels"
 	}
 	if m.cwd != "" {
 		hint = m.cwd + "  ·  " + hint
 	}
 	m.footer = style.Render(hint)
+}
+
+func renderToolUse(name, input string) string {
+	dot := lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render("⏺")
+	nameStyled := lipgloss.NewStyle().Bold(true).Render(name)
+	if input == "" {
+		return fmt.Sprintf("%s %s", dot, nameStyled)
+	}
+	args := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("(" + input + ")")
+	return fmt.Sprintf("%s %s%s", dot, nameStyled, args)
+}
+
+func singleLine(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
 }

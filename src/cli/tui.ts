@@ -39,16 +39,20 @@ interface HostEvent {
     | 'banner'
     | 'text-delta'
     | 'tool-use'
+    | 'tool-result'
     | 'assistant-end'
     | 'result'
     | 'error'
     | 'status'
     | 'busy'
+    | 'thinking'
   text?: string
   model?: string
   cwd?: string
   name?: string
   id?: string
+  input?: string
+  ok?: boolean
   sessionId?: string
   contextTokens?: number
   costUSD?: number
@@ -164,6 +168,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     busy = true
     sendToTui({ type: 'busy', reason: 'true' })
     let streamedText = false
+    const seenToolUseFromStream = new Set<string>()
     try {
       await session.send(prompt)
       for await (const msg of session.stream()) {
@@ -175,7 +180,31 @@ export async function runTui(opts: TuiOptions): Promise<void> {
             sendToTui({ type: 'text-delta', text: e.delta.text })
           }
           if (e.type === 'content_block_start' && e.content_block.type === 'tool_use') {
-            sendToTui({ type: 'tool-use', name: e.content_block.name, id: e.content_block.id })
+            seenToolUseFromStream.add(e.content_block.id)
+            sendToTui({
+              type: 'tool-use',
+              name: e.content_block.name,
+              id: e.content_block.id,
+              input: summariseToolInput(e.content_block.name, e.content_block.input),
+            })
+          }
+          continue
+        }
+        if (msg.type === 'user') {
+          // V2 surfaces tool execution results as user messages with
+          // tool_result blocks. Forward them so the TUI can render them
+          // under the matching tool-use line.
+          const um = msg as { message?: { content?: unknown } }
+          const blocks = (um.message?.content ?? []) as Array<Record<string, unknown>>
+          if (Array.isArray(blocks)) {
+            for (const b of blocks) {
+              if (b?.type === 'tool_result') {
+                const id = typeof b.tool_use_id === 'string' ? b.tool_use_id : ''
+                const ok = b.is_error !== true
+                const text = stringifyToolContent(b.content).slice(0, 240)
+                sendToTui({ type: 'tool-result', id, ok, message: text })
+              }
+            }
           }
           continue
         }
@@ -193,11 +222,15 @@ export async function runTui(opts: TuiOptions): Promise<void> {
                 streamedText = true
               }
               if (b?.type === 'tool_use' && typeof b.name === 'string') {
-                sendToTui({
-                  type: 'tool-use',
-                  name: b.name as string,
-                  id: typeof b.id === 'string' ? (b.id as string) : '',
-                })
+                const id = typeof b.id === 'string' ? (b.id as string) : ''
+                if (!seenToolUseFromStream.has(id)) {
+                  sendToTui({
+                    type: 'tool-use',
+                    name: b.name as string,
+                    id,
+                    input: summariseToolInput(b.name as string, b.input),
+                  })
+                }
               }
             }
           }
@@ -233,9 +266,34 @@ export async function runTui(opts: TuiOptions): Promise<void> {
       case '/help':
         sendToTui({
           type: 'status',
-          message: '/help /clear /model <id> /cwd [path] /compact /status /exit',
+          message:
+            '/help /clear /model <id> /cwd [path] /self [on|off] /compact /status /exit',
         })
         return
+
+      case '/self': {
+        const root = resolveSelfRoot()
+        const dirs = sessionOptions.additionalDirectories ?? []
+        const turnOff = arg === 'off'
+        const newDirs = turnOff
+          ? dirs.filter((d) => d !== root)
+          : dirs.includes(root) ? dirs : [...dirs, root]
+        sessionOptions = {
+          ...sessionOptions,
+          additionalDirectories: newDirs,
+          systemPrompt: turnOff
+            ? sessionOptions.systemPrompt
+            : selfModSystemPrompt(sessionOptions.systemPrompt, root),
+        } as SDKSessionOptions
+        await session.close().catch(() => {})
+        session = unstable_v2_createSession(sessionOptions)
+        sessionId = null
+        sendToTui({
+          type: 'status',
+          message: turnOff ? `self-edit off` : `self-edit on (${root})`,
+        })
+        return
+      }
       case '/clear':
         await session.close().catch(() => {})
         session = unstable_v2_createSession(sessionOptions)
@@ -311,6 +369,68 @@ async function* readNdjson(stream: Readable): AsyncGenerator<UIEvent> {
 function resolveBinary(): string {
   const here = dirname(fileURLToPath(import.meta.url))
   return resolve(here, '../../bin/claude-sdk-tui')
+}
+
+function resolveSelfRoot(): string {
+  const here = dirname(fileURLToPath(import.meta.url))
+  return resolve(here, '../..')
+}
+
+function selfModSystemPrompt(base: string | undefined, root: string): string {
+  const note =
+    `You are running inside @miyago/claude-sdk, located at ${root}. ` +
+    `Self-edit mode is enabled: you may read and modify files under that ` +
+    `path to evolve the CLI/TUI/SDK adapter itself. After changes that ` +
+    `affect the Go TUI (cmd/tui/), instruct the user to run ` +
+    '`bash scripts/build-tui.sh` and restart `claude-sdk --tui`.'
+  return base ? `${base}\n\n${note}` : note
+}
+
+function summariseToolInput(name: string, input: unknown): string {
+  if (input == null || typeof input !== 'object') return ''
+  const obj = input as Record<string, unknown>
+  switch (name) {
+    case 'Bash':
+      return typeof obj.command === 'string' ? obj.command.slice(0, 80) : ''
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+      return typeof obj.file_path === 'string' ? obj.file_path : ''
+    case 'Glob':
+      return typeof obj.pattern === 'string' ? obj.pattern : ''
+    case 'Grep':
+      return typeof obj.pattern === 'string' ? obj.pattern : ''
+    default: {
+      const keys = Object.keys(obj).slice(0, 3)
+      return keys.map((k) => `${k}=${truncate(String(obj[k]), 30)}`).join(' ')
+    }
+  }
+}
+
+function stringifyToolContent(content: unknown): string {
+  if (content == null) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => {
+        if (b && typeof b === 'object') {
+          const obj = b as Record<string, unknown>
+          if (typeof obj.text === 'string') return obj.text
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (typeof content === 'object') {
+    const obj = content as Record<string, unknown>
+    if (typeof obj.text === 'string') return obj.text
+  }
+  return JSON.stringify(content)
+}
+
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + '…'
 }
 
 function openDebugLog(): WriteStream | null {
