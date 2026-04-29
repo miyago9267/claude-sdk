@@ -58,6 +58,7 @@ interface HostEvent {
   ok?: boolean
   sessionId?: string
   contextTokens?: number
+  contextWindow?: number
   costUSD?: number
   compactions?: number
   message?: string
@@ -297,6 +298,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
             type: 'result',
             sessionId: r.session_id,
             contextTokens: manager.getState().contextTokensEstimate,
+            contextWindow: extractContextWindow(r),
             costUSD: 'total_cost_usd' in r ? r.total_cost_usd : 0,
             compactions: manager.getState().totalCompactions,
           })
@@ -438,6 +440,15 @@ async function* readNdjson(stream: Readable): AsyncGenerator<UIEvent> {
 function resolveBinary(): string {
   const here = dirname(fileURLToPath(import.meta.url))
   return resolve(here, '../../bin/claude-sdk-tui')
+}
+
+function extractContextWindow(r: SDKResultMessage): number | undefined {
+  const usage = (r as { modelUsage?: Record<string, { contextWindow?: number }> }).modelUsage
+  if (!usage) return undefined
+  for (const u of Object.values(usage)) {
+    if (typeof u?.contextWindow === 'number' && u.contextWindow > 0) return u.contextWindow
+  }
+  return undefined
 }
 
 function resolveSelfRoot(): string {

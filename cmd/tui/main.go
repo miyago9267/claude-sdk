@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -103,6 +106,18 @@ type model struct {
 	// Per-turn timing: when busy starts so the footer can show elapsed.
 	turnStartedAt time.Time
 
+	// Markdown buffering. text-delta events accumulate into mdAccum and
+	// stream verbatim into the transcript starting at mdStart. On any
+	// non-text event (tool-use, tool-result, assistant-end) we flush:
+	// re-render mdAccum through glamour and replace the verbatim slice.
+	mdRenderer *glamour.TermRenderer
+	mdAccum    string
+	mdStart    int // -1 when no active accumulation
+
+	// Optional, populated from result events. Gives the header an actual
+	// percentage instead of just a token count.
+	contextMax int
+
 	// Slash-command autocomplete: full pool from EvtCapabilities, current
 	// filtered subset based on the input value, and which one is highlighted.
 	allCommands  []Candidate
@@ -139,11 +154,18 @@ func newModel(uiOut io.Writer) *model {
 	sp.Spinner = spinner.MiniDot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 
+	r, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(0),
+	)
+
 	return &model{
-		input:    ta,
-		spin:     sp,
-		out:      newWriter(uiOut),
-		toolByID: map[string]toolEntry{},
+		input:      ta,
+		spin:       sp,
+		out:        newWriter(uiOut),
+		toolByID:   map[string]toolEntry{},
+		mdRenderer: r,
+		mdStart:    -1,
 	}
 }
 
@@ -288,8 +310,9 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		m.refreshHeader()
 		m.refreshFooter()
 	case EvtTextDelta:
-		m.appendInline(ev.Text)
+		m.streamMarkdown(ev.Text)
 	case EvtToolUse:
+		m.flushMarkdown()
 		line := renderToolUse(ev.ToolName, ev.ToolInput, "pending")
 		m.appendLine(line)
 		if ev.ToolID != "" {
@@ -300,6 +323,7 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 			}
 		}
 	case EvtToolResult:
+		m.flushMarkdown()
 		ok := ev.OK == nil || *ev.OK
 		// Rewrite the original tool-use line so the leading bullet flips
 		// from ⏺ (pending) to ✓/✗ (final).
@@ -318,6 +342,7 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		}
 		m.appendLine(marker + bodyStyle.Render(summary))
 	case EvtAssistantEnd:
+		m.flushMarkdown()
 		m.appendLine("")
 		m.state = stateIdle
 		m.refreshFooter()
@@ -327,6 +352,9 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		}
 		if ev.ContextTokens > 0 {
 			m.context = ev.ContextTokens
+		}
+		if ev.ContextWindow > 0 {
+			m.contextMax = ev.ContextWindow
 		}
 		if ev.CostUSD > 0 {
 			m.cost = ev.CostUSD
@@ -338,6 +366,7 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		m.state = stateIdle
 		m.refreshFooter()
 	case EvtError:
+		m.flushMarkdown()
 		m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("[error] " + ev.Message))
 		m.state = stateIdle
 		m.refreshFooter()
@@ -402,28 +431,40 @@ func (m *model) suggestionsView() string {
 		rows = rows[:popupMaxRows]
 	}
 	itemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	srcStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("105"))
 	sel := lipgloss.NewStyle().
 		Background(lipgloss.Color("63")).
 		Foreground(lipgloss.Color("231")).
 		Bold(true)
-	lines := make([]string, 0, len(rows))
+	lines := make([]string, 0, len(rows)+2)
 	for i, c := range rows {
 		name := c.Name
 		src := ""
 		if c.Source != "" {
 			src = srcStyle.Render(" [" + c.Source + "]")
 		}
-		desc := ""
-		if c.Description != "" {
-			desc = descStyle.Render("  " + truncate(c.Description, m.w-len(name)-len(c.Source)-12))
-		}
-		line := itemStyle.Render(" "+name) + src + desc
+		line := itemStyle.Render(" "+name) + src
 		if i == m.suggestIdx {
-			line = sel.Width(m.w - 2).Render(" "+name) + src + desc
+			line = sel.Width(m.w - 2).Render(" "+name) + src
 		}
 		lines = append(lines, line)
+	}
+	// Description preview for the highlighted entry. Single dim line below
+	// the candidate list separated by a thin rule.
+	if m.suggestIdx < len(rows) {
+		sel := rows[m.suggestIdx]
+		preview := sel.Description
+		if preview == "" {
+			preview = "(no description)"
+		}
+		lines = append(lines,
+			lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", m.w-4)),
+		)
+		lines = append(lines,
+			lipgloss.NewStyle().
+				Foreground(lipgloss.Color("244")).
+				Render(" ↳ "+truncate(preview, m.w-7)),
+		)
 	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
@@ -447,7 +488,8 @@ func (m *model) layout() {
 		if n > popupMaxRows {
 			n = popupMaxRows
 		}
-		popupH = n + 2
+		// rows + separator + preview + 2 border lines
+		popupH = n + 2 + 2
 	}
 	vpH := m.h - headerH - footerH - inputH - popupH - 1
 	if vpH < 3 {
@@ -461,18 +503,24 @@ func (m *model) layout() {
 		m.vp.Height = vpH
 	}
 	m.input.SetWidth(m.w - 6)
+	if m.mdRenderer != nil {
+		// Re-init renderer with the current width so word wrap matches.
+		if r, err := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(m.w-2),
+		); err == nil {
+			m.mdRenderer = r
+		}
+	}
 	m.refreshHeader()
 	m.refreshFooter()
-	m.vp.SetContent(strings.Join(m.transcript, "\n"))
+	m.refreshViewport()
 	m.vp.GotoBottom()
 }
 
 func (m *model) appendLine(line string) {
 	m.transcript = append(m.transcript, line)
-	if m.ready {
-		m.vp.SetContent(strings.Join(m.transcript, "\n"))
-		m.vp.GotoBottom()
-	}
+	m.refreshViewport()
 }
 
 func (m *model) appendInline(text string) {
@@ -482,10 +530,57 @@ func (m *model) appendInline(text string) {
 		last := len(m.transcript) - 1
 		m.transcript[last] += text
 	}
-	if m.ready {
-		m.vp.SetContent(strings.Join(m.transcript, "\n"))
-		m.vp.GotoBottom()
+	m.refreshViewport()
+}
+
+// streamMarkdown accumulates the assistant text-delta stream so we can
+// re-render it as Markdown on flush. While streaming we replace the
+// trailing slice transcript[mdStart:] with the verbatim accumulator split
+// by newline; the transcript stays consistent for layout but rendering
+// quality is upgraded once the turn ends.
+func (m *model) streamMarkdown(text string) {
+	if m.mdStart < 0 {
+		m.mdStart = len(m.transcript)
 	}
+	m.mdAccum += text
+	m.transcript = m.transcript[:m.mdStart]
+	for _, line := range strings.Split(m.mdAccum, "\n") {
+		m.transcript = append(m.transcript, line)
+	}
+	m.refreshViewport()
+}
+
+func (m *model) flushMarkdown() {
+	if m.mdStart < 0 || m.mdAccum == "" {
+		m.mdStart = -1
+		m.mdAccum = ""
+		return
+	}
+	rendered := m.mdAccum
+	if m.mdRenderer != nil {
+		if out, err := m.mdRenderer.Render(m.mdAccum); err == nil {
+			rendered = strings.TrimRight(out, "\n")
+		}
+	}
+	m.transcript = m.transcript[:m.mdStart]
+	for _, line := range strings.Split(rendered, "\n") {
+		m.transcript = append(m.transcript, line)
+	}
+	m.mdStart = -1
+	m.mdAccum = ""
+	m.refreshViewport()
+}
+
+func (m *model) refreshViewport() {
+	if !m.ready {
+		return
+	}
+	if len(m.transcript) == 0 {
+		m.vp.SetContent(m.renderWelcome())
+		return
+	}
+	m.vp.SetContent(strings.Join(m.transcript, "\n"))
+	m.vp.GotoBottom()
 }
 
 func (m *model) refreshHeader() {
@@ -509,7 +604,7 @@ func (m *model) refreshHeader() {
 		parts = append(parts, badge(lipgloss.Color("236"), lipgloss.Color("214"), m.model))
 	}
 	if m.context > 0 {
-		parts = append(parts, chip(lipgloss.Color("245"), fmt.Sprintf("ctx ~%s", humanTokens(m.context))))
+		parts = append(parts, m.contextChip())
 	}
 	if m.cost > 0 {
 		parts = append(parts, chip(lipgloss.Color("214"), fmt.Sprintf("$%.4f", m.cost)))
@@ -519,6 +614,47 @@ func (m *model) refreshHeader() {
 	}
 	bg := lipgloss.NewStyle().Background(lipgloss.Color("234")).Width(m.w)
 	m.header = bg.Render(strings.Join(parts, ""))
+}
+
+// contextChip renders either a numeric chip (when contextMax is unknown) or
+// a coloured progress bar with absolute count + percent.
+func (m *model) contextChip() string {
+	if m.contextMax <= 0 {
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Padding(0, 1).
+			Render(fmt.Sprintf("ctx ~%s", humanTokens(m.context)))
+	}
+	pct := float64(m.context) / float64(m.contextMax)
+	if pct > 1 {
+		pct = 1
+	}
+	color := lipgloss.Color("78") // green
+	if pct >= 0.7 {
+		color = lipgloss.Color("214") // amber
+	}
+	if pct >= 0.9 {
+		color = lipgloss.Color("203") // red
+	}
+	bar := renderProgressBar(pct, 8, color)
+	label := fmt.Sprintf("%s/%s %.0f%%", humanTokens(m.context), humanTokens(m.contextMax), pct*100)
+	return lipgloss.NewStyle().Padding(0, 1).Render(bar+" "+lipgloss.NewStyle().Foreground(color).Render(label))
+}
+
+func renderProgressBar(pct float64, width int, color lipgloss.Color) string {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 1 {
+		pct = 1
+	}
+	filled := int(math.Round(float64(width) * pct))
+	if filled > width {
+		filled = width
+	}
+	full := lipgloss.NewStyle().Foreground(color).Render(strings.Repeat("█", filled))
+	empty := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("░", width-filled))
+	return full + empty
 }
 
 func (m *model) refreshFooter() {
@@ -572,6 +708,49 @@ func renderUserPrompt(text string) string {
 		Foreground(lipgloss.Color("250")).
 		PaddingLeft(1).
 		Render(text)
+}
+
+var welcomeTips = []string{
+	"Type a prompt and hit Enter to send.",
+	"Press / to bring up the slash command palette.",
+	"Tab applies the highlighted suggestion · Esc dismisses it.",
+	"Ctrl+J inserts a newline · Enter submits.",
+	"PgUp / PgDn scrolls back through the transcript.",
+	"/clear drops the session · /compact frees context tokens.",
+	"/model claude-haiku-4-5 to swap models mid-conversation.",
+	"/self toggles self-edit mode (claude-sdk root in additionalDirectories).",
+	"/skills lists installed skills · /commands lists slash commands.",
+	"Long replies render as Markdown when the turn finishes.",
+}
+
+var welcomeLogo = `
+   _____ _                 _      _____ _____  _  __
+  / ____| |               | |    / ____|  __ \| |/ /
+ | |    | | __ _ _   _  __| | __| (___ | |  | | ' /
+ | |    | |/ _` + "`" + ` | | | |/ _` + "`" + ` |/ _ \\___ \| |  | |  <
+ | |____| | (_| | |_| | (_| |  __/____) | |__| | . \
+  \_____|_|\__,_|\__,_|\__,_|\___|_____/|_____/|_|\_\
+`
+
+func (m *model) renderWelcome() string {
+	logoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("63"))
+	tipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("105")).Bold(true)
+
+	tip := welcomeTips[rand.Intn(len(welcomeTips))]
+
+	body := strings.Join([]string{
+		logoStyle.Render(strings.TrimLeft(welcomeLogo, "\n")),
+		"",
+		hintStyle.Render("  Welcome to claude-sdk."),
+		"",
+		tipStyle.Render("  tip: " + tip),
+		"",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(
+			"  cwd: " + m.cwd + "  ·  model: " + m.model,
+		),
+	}, "\n")
+	return body
 }
 
 func singleLine(s string, max int) string {

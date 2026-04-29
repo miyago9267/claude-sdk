@@ -26,6 +26,7 @@ type HostEvent struct {
 	OK            *bool   `json:"ok,omitempty"`
 	SessionID     string  `json:"sessionId,omitempty"`
 	ContextTokens int     `json:"contextTokens,omitempty"`
+	ContextWindow int     `json:"contextWindow,omitempty"`
 	CostUSD       float64 `json:"costUSD,omitempty"`
 	Compactions   int     `json:"compactions,omitempty"`
 	Message       string  `json:"message,omitempty"`
