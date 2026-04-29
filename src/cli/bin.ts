@@ -15,6 +15,7 @@
 import { HELP_TEXT, parseArgs } from './args.ts'
 import { runOneShot } from './runner.ts'
 import { runRepl } from './repl.ts'
+import { SessionStore, type SessionMeta } from './session-store.ts'
 
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return ''
@@ -54,15 +55,32 @@ async function main(): Promise<void> {
 
   warnUnsupported(args)
 
-  if (args.continue || args.resume) {
+  // Session store + resume resolution.
+  const store = new SessionStore()
+  let resumeMeta: SessionMeta | null = null
+  if (args.resume) {
+    resumeMeta = store.get(args.resume)
+    if (!resumeMeta) {
+      process.stderr.write(`claude-sdk: no stored session with id "${args.resume}"\n`)
+      process.exit(2)
+    }
+  } else if (args.continue) {
+    resumeMeta = store.findLatestByCwd(args.cwd ?? process.cwd())
+    if (!resumeMeta) {
+      process.stderr.write(`claude-sdk: no previous session in this cwd to continue\n`)
+      process.exit(2)
+    }
+  }
+  if (resumeMeta) {
     process.stderr.write(
-      'claude-sdk: -c / --resume not implemented yet (V2 sessions are not persisted to disk). Continuing as new session.\n',
+      `claude-sdk: resuming session ${resumeMeta.id} (${resumeMeta.turnCount} turns)\n`,
     )
   }
+  const logicalSessionId = resumeMeta?.id
 
   if (args.mode === 'tui') {
     const { runTui } = await import('./tui.ts')
-    await runTui({ args })
+    await runTui({ args, store, logicalSessionId })
     return
   }
 
@@ -101,17 +119,17 @@ async function main(): Promise<void> {
       process.stderr.write('No prompt provided. See --help.\n')
       process.exit(2)
     }
-    await runOneShot({ prompt, args })
+    await runOneShot({ prompt, args, store, logicalSessionId })
     return
   }
 
   const piped = await readStdin()
   if (piped) {
-    await runOneShot({ prompt: piped, args })
+    await runOneShot({ prompt: piped, args, store, logicalSessionId })
     return
   }
 
-  await runRepl({ args, seedPrompt: args.prompt })
+  await runRepl({ args, seedPrompt: args.prompt, store, logicalSessionId })
 }
 
 main().catch((err) => {

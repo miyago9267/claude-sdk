@@ -16,12 +16,17 @@ import {
 import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
 import { safeCloseSession } from './safe-close.ts'
+import { SessionStore } from './session-store.ts'
 
 export interface OneShotOptions {
   prompt: string
   args: ParsedArgs
   out?: { write: (s: string) => void }
   err?: { write: (s: string) => void }
+  /** Phase A session persistence. Provide an existing logical id to resume,
+   * or omit to create a fresh entry once the turn finishes. */
+  store?: SessionStore
+  logicalSessionId?: string
 }
 
 export async function runOneShot(opts: OneShotOptions): Promise<{
@@ -40,8 +45,16 @@ export async function runOneShot(opts: OneShotOptions): Promise<{
   let result: SDKResultMessage | null = null
   let streamedText = false
 
+  // Resume support: if the caller passed a logical id, prepend the persisted
+  // transcript as a continuation block before the actual prompt.
+  let effectivePrompt = opts.prompt
+  if (opts.store && opts.logicalSessionId) {
+    const prefix = opts.store.formatHistoryPrefix(opts.logicalSessionId)
+    if (prefix) effectivePrompt = prefix + effectivePrompt
+  }
+
   try {
-    await session.send(opts.prompt)
+    await session.send(effectivePrompt)
     for await (const msg of session.stream()) {
       if (format === 'stream-json') {
         out.write(JSON.stringify(msg) + '\n')
@@ -61,6 +74,21 @@ export async function runOneShot(opts: OneShotOptions): Promise<{
     }
   } finally {
     await safeCloseSession(session)
+  }
+
+  if (opts.store) {
+    let id = opts.logicalSessionId
+    if (!id) {
+      const meta = opts.store.create({
+        cwd: opts.args.cwd ?? process.cwd(),
+        model: opts.args.model ?? 'claude-sonnet-4-6',
+      })
+      id = meta.id
+    }
+    opts.store.appendTurn(id, { role: 'user', content: opts.prompt })
+    if (collected) {
+      opts.store.appendTurn(id, { role: 'assistant', content: collected })
+    }
   }
 
   return { result, text: collected }

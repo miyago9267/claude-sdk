@@ -32,10 +32,13 @@ import { discoverCommands, discoverSkills, formatList } from './discover.ts'
 import { safeCloseSession } from './safe-close.ts'
 import { resolveModel, formatKnownModels, KNOWN_MODELS } from './models.ts'
 import { readGitBranch, readGitDirty } from './git-info.ts'
+import { SessionStore } from './session-store.ts'
 
 export interface TuiOptions {
   args: ParsedArgs
   binaryPath?: string
+  store?: SessionStore
+  logicalSessionId?: string
 }
 
 interface HostEvent {
@@ -138,6 +141,14 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   let session: SDKSession = unstable_v2_createSession(sessionOptions)
   let sessionId: string | null = null
   let busy = false
+
+  const store = opts.store
+  let logicalId: string | null = opts.logicalSessionId ?? null
+  let pendingPrefix = ''
+  if (store && logicalId) {
+    pendingPrefix = store.formatHistoryPrefix(logicalId)
+    store.touch(logicalId)
+  }
 
   // Best-effort Claude Max 5-hour window estimate. Anthropic doesn't expose
   // the real quota over the SDK, so we accumulate per-turn cost deltas into
@@ -283,15 +294,22 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     busy = true
     sendToTui({ type: 'busy', reason: 'true' })
     let streamedText = false
+    let assistantText = ''
     const seenToolUseFromStream = new Set<string>()
+    let effectivePrompt = prompt
+    if (pendingPrefix) {
+      effectivePrompt = pendingPrefix + prompt
+      pendingPrefix = ''
+    }
     try {
-      await session.send(prompt)
+      await session.send(effectivePrompt)
       for await (const msg of session.stream()) {
         debug?.write(`[<-sdk] ${msg.type}\n`)
         if (msg.type === 'stream_event') {
           const e = msg.event
           if (e.type === 'content_block_delta' && e.delta.type === 'text_delta') {
             streamedText = true
+            assistantText += e.delta.text
             sendToTui({ type: 'text-delta', text: e.delta.text })
           }
           if (e.type === 'content_block_start' && e.content_block.type === 'tool_use') {
@@ -334,6 +352,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
             for (const b of blocks) {
               if (b?.type === 'text' && typeof b.text === 'string') {
                 sendToTui({ type: 'text-delta', text: b.text as string })
+                assistantText += b.text as string
                 streamedText = true
               }
               if (b?.type === 'tool_use' && typeof b.name === 'string') {
@@ -398,6 +417,20 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     } finally {
       busy = false
       sendToTui({ type: 'busy', reason: 'false' })
+    }
+
+    if (store) {
+      if (!logicalId) {
+        const meta = store.create({
+          cwd: sessionOptions.cwd ?? process.cwd(),
+          model: sessionOptions.model,
+        })
+        logicalId = meta.id
+      }
+      store.appendTurn(logicalId, { role: 'user', content: prompt })
+      if (assistantText) {
+        store.appendTurn(logicalId, { role: 'assistant', content: assistantText })
+      }
     }
   }
 

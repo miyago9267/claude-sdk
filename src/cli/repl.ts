@@ -28,10 +28,13 @@ import {
   formatList,
 } from './discover.ts'
 import { resolveModel, formatKnownModels } from './models.ts'
+import { SessionStore } from './session-store.ts'
 
 export interface ReplOptions {
   args: ParsedArgs
   seedPrompt?: string
+  store?: SessionStore
+  logicalSessionId?: string
 }
 
 export async function runRepl(opts: ReplOptions): Promise<void> {
@@ -40,6 +43,16 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   let session: SDKSession = unstable_v2_createSession(sessionOptions)
   let sessionId: string | null = null
   let lastResult: SDKResultMessage | null = null
+
+  const store = opts.store
+  let logicalId: string | null = opts.logicalSessionId ?? null
+  let pendingPrefix = ''
+  if (store && logicalId) {
+    pendingPrefix = store.formatHistoryPrefix(logicalId)
+    store.touch(logicalId)
+    const turns = store.loadTurns(logicalId).length
+    process.stderr.write(c.gray(`[resume] session ${logicalId} · ${turns} turns\n`))
+  }
 
   const log = (line: string) => process.stderr.write(`${c.gray(`[ctx] ${line}`)}\n`)
 
@@ -100,13 +113,20 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   await safeCloseSession(session)
 
   async function runTurn(prompt: string): Promise<void> {
+    let effectivePrompt = prompt
+    if (pendingPrefix) {
+      effectivePrompt = pendingPrefix + prompt
+      pendingPrefix = ''
+    }
+    let assistantText = ''
     try {
-      await session.send(prompt)
+      await session.send(effectivePrompt)
       for await (const msg of session.stream()) {
         if (msg.type === 'stream_event') {
           const ev = msg.event
           if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') {
             process.stdout.write(ev.delta.text)
+            assistantText += ev.delta.text
           }
           if (ev.type === 'content_block_start' && ev.content_block.type === 'tool_use') {
             process.stderr.write(`\n${c.dim(`[tool] ${ev.content_block.name}`)}\n`)
@@ -116,6 +136,16 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         if (msg.type === 'assistant') {
           const am = msg as SDKAssistantMessage
           if (am.error) process.stderr.write(`\n${c.red(`[error] ${am.error}`)}\n`)
+          // Fallback when stream_event didn't carry text_delta
+          if (!assistantText) {
+            const blocks = (am.message?.content ?? []) as Array<Record<string, unknown>>
+            for (const b of blocks) {
+              if (b?.type === 'text' && typeof b.text === 'string') {
+                process.stdout.write(b.text as string)
+                assistantText += b.text as string
+              }
+            }
+          }
         }
         if (msg.type === 'result') {
           const r = msg as SDKResultMessage
@@ -130,6 +160,20 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       process.stderr.write(`\n${c.red(`[error] ${message}`)}\n`)
+    }
+
+    if (store) {
+      if (!logicalId) {
+        const meta = store.create({
+          cwd: sessionOptions.cwd ?? process.cwd(),
+          model: sessionOptions.model,
+        })
+        logicalId = meta.id
+      }
+      store.appendTurn(logicalId, { role: 'user', content: prompt })
+      if (assistantText) {
+        store.appendTurn(logicalId, { role: 'assistant', content: assistantText })
+      }
     }
   }
 
