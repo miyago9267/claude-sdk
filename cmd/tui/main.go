@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -95,9 +96,12 @@ type model struct {
 
 	transcript []string
 	// toolByID lets a tool-result event find the transcript line carrying
-	// the matching tool-use marker so we can append `⎿ result` under it
-	// instead of dropping the result on a fresh line.
-	toolByID map[string]int
+	// the matching tool-use marker so we can rewrite it with the final
+	// success/failure icon (and append `⎿ result` underneath).
+	toolByID map[string]toolEntry
+
+	// Per-turn timing: when busy starts so the footer can show elapsed.
+	turnStartedAt time.Time
 
 	// Slash-command autocomplete: full pool from EvtCapabilities, current
 	// filtered subset based on the input value, and which one is highlighted.
@@ -114,6 +118,12 @@ type model struct {
 }
 
 const popupMaxRows = 6
+
+type toolEntry struct {
+	idx   int
+	name  string
+	input string
+}
 
 func newModel(uiOut io.Writer) *model {
 	ta := textarea.New()
@@ -133,7 +143,7 @@ func newModel(uiOut io.Writer) *model {
 		input:    ta,
 		spin:     sp,
 		out:      newWriter(uiOut),
-		toolByID: map[string]int{},
+		toolByID: map[string]toolEntry{},
 	}
 }
 
@@ -205,9 +215,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.out.send(UIEvent{Type: UISlash, Cmd: text})
 				return m, nil
 			}
-			for _, line := range strings.Split(text, "\n") {
-				m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("> " + line))
-			}
+			m.appendLine(renderUserPrompt(text))
 			m.appendLine("")
 			m.state = stateBusy
 			m.refreshFooter()
@@ -282,22 +290,33 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 	case EvtTextDelta:
 		m.appendInline(ev.Text)
 	case EvtToolUse:
-		line := renderToolUse(ev.ToolName, ev.ToolInput)
+		line := renderToolUse(ev.ToolName, ev.ToolInput, "pending")
 		m.appendLine(line)
 		if ev.ToolID != "" {
-			m.toolByID[ev.ToolID] = len(m.transcript) - 1
+			m.toolByID[ev.ToolID] = toolEntry{
+				idx:   len(m.transcript) - 1,
+				name:  ev.ToolName,
+				input: ev.ToolInput,
+			}
 		}
 	case EvtToolResult:
 		ok := ev.OK == nil || *ev.OK
+		// Rewrite the original tool-use line so the leading bullet flips
+		// from ⏺ (pending) to ✓/✗ (final).
+		if entry, found := m.toolByID[ev.ToolID]; found && entry.idx < len(m.transcript) {
+			status := "ok"
+			if !ok {
+				status = "err"
+			}
+			m.transcript[entry.idx] = renderToolUse(entry.name, entry.input, status)
+		}
 		summary := singleLine(ev.Message, 100)
 		marker := "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("⎿ ")
-		body := summary
+		bodyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 		if !ok {
-			body = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render(summary)
-		} else {
-			body = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(summary)
+			bodyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 		}
-		m.appendLine(marker + body)
+		m.appendLine(marker + bodyStyle.Render(summary))
 	case EvtAssistantEnd:
 		m.appendLine("")
 		m.state = stateIdle
@@ -332,8 +351,10 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 	case EvtBusy:
 		if ev.Reason == "true" {
 			m.state = stateBusy
+			m.turnStartedAt = time.Now()
 		} else {
 			m.state = stateIdle
+			m.turnStartedAt = time.Time{}
 		}
 		m.refreshFooter()
 	case EvtCapabilities:
@@ -468,45 +489,89 @@ func (m *model) appendInline(text string) {
 }
 
 func (m *model) refreshHeader() {
-	style := lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("252")).Padding(0, 1)
-	parts := []string{"claude-sdk"}
+	badge := func(bg, fg lipgloss.Color, text string) string {
+		return lipgloss.NewStyle().
+			Background(bg).
+			Foreground(fg).
+			Padding(0, 1).
+			Bold(true).
+			Render(text)
+	}
+	chip := func(fg lipgloss.Color, text string) string {
+		return lipgloss.NewStyle().
+			Foreground(fg).
+			Padding(0, 1).
+			Render(text)
+	}
+
+	parts := []string{badge(lipgloss.Color("63"), lipgloss.Color("231"), "claude-sdk")}
 	if m.model != "" {
-		parts = append(parts, "model:"+m.model)
+		parts = append(parts, badge(lipgloss.Color("236"), lipgloss.Color("214"), m.model))
 	}
 	if m.context > 0 {
-		parts = append(parts, fmt.Sprintf("ctx:~%d", m.context))
+		parts = append(parts, chip(lipgloss.Color("245"), fmt.Sprintf("ctx ~%s", humanTokens(m.context))))
 	}
 	if m.cost > 0 {
-		parts = append(parts, fmt.Sprintf("$%.4f", m.cost))
+		parts = append(parts, chip(lipgloss.Color("214"), fmt.Sprintf("$%.4f", m.cost)))
 	}
 	if m.compacts > 0 {
-		parts = append(parts, fmt.Sprintf("compacts:%d", m.compacts))
+		parts = append(parts, chip(lipgloss.Color("141"), fmt.Sprintf("compact ×%d", m.compacts)))
 	}
-	m.header = style.Width(m.w).Render(strings.Join(parts, " · "))
+	bg := lipgloss.NewStyle().Background(lipgloss.Color("234")).Width(m.w)
+	m.header = bg.Render(strings.Join(parts, ""))
 }
 
 func (m *model) refreshFooter() {
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	hint := "Enter send · Ctrl+J newline · /help · Ctrl+C exit"
 	if m.state == stateBusy {
+		elapsed := ""
+		if !m.turnStartedAt.IsZero() {
+			d := time.Since(m.turnStartedAt).Round(time.Second)
+			elapsed = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(d.String())
+		}
 		hint = m.spin.View() + " " +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("thinking…") +
-			"  ·  Ctrl+C cancels"
+			elapsed + "  ·  Ctrl+C cancels"
 	}
 	if m.cwd != "" {
-		hint = m.cwd + "  ·  " + hint
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(m.cwd) + "  ·  " + hint
 	}
 	m.footer = style.Render(hint)
 }
 
-func renderToolUse(name, input string) string {
-	dot := lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render("⏺")
+func renderToolUse(name, input, status string) string {
+	var dot string
+	switch status {
+	case "ok":
+		dot = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render("✓")
+	case "err":
+		dot = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("✗")
+	default:
+		dot = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("⏺")
+	}
 	nameStyled := lipgloss.NewStyle().Bold(true).Render(name)
 	if input == "" {
 		return fmt.Sprintf("%s %s", dot, nameStyled)
 	}
 	args := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("(" + input + ")")
 	return fmt.Sprintf("%s %s%s", dot, nameStyled, args)
+}
+
+func humanTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func renderUserPrompt(text string) string {
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("141")).
+		Foreground(lipgloss.Color("250")).
+		PaddingLeft(1).
+		Render(text)
 }
 
 func singleLine(s string, max int) string {
