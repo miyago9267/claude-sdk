@@ -5,6 +5,7 @@
  * root. Returns null when not inside a git repo.
  */
 
+import { execSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
@@ -56,4 +57,23 @@ function parseHead(headPath: string): string | null {
   const ref = content.match(/^ref: refs\/heads\/(.+)$/)
   if (ref) return ref[1]!
   return content.slice(0, 7)
+}
+
+/**
+ * Returns true if the working tree has any tracked or untracked changes.
+ * One-shot `git status --porcelain` with a 2s timeout. Failure → false (we
+ * don't want a slow git host to stall TUI startup).
+ */
+export function readGitDirty(cwd: string): boolean {
+  try {
+    const out = execSync('git status --porcelain', {
+      cwd,
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return out.trim().length > 0
+  } catch {
+    return false
+  }
 }

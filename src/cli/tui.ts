@@ -31,7 +31,7 @@ import { buildSessionOptions } from './session-options.ts'
 import { discoverCommands, discoverSkills, formatList } from './discover.ts'
 import { safeCloseSession } from './safe-close.ts'
 import { resolveModel, formatKnownModels, KNOWN_MODELS } from './models.ts'
-import { readGitBranch } from './git-info.ts'
+import { readGitBranch, readGitDirty } from './git-info.ts'
 
 export interface TuiOptions {
   args: ParsedArgs
@@ -55,6 +55,7 @@ interface HostEvent {
   model?: string
   cwd?: string
   branch?: string
+  branchDirty?: boolean
   name?: string
   id?: string
   input?: string
@@ -182,11 +183,13 @@ export async function runTui(opts: TuiOptions): Promise<void> {
 
   function sendBanner() {
     const cwd = sessionOptions.cwd ?? process.cwd()
+    const branch = readGitBranch(cwd)
     sendToTui({
       type: 'banner',
       model: sessionOptions.model,
       cwd,
-      branch: readGitBranch(cwd) ?? '',
+      branch: branch ?? '',
+      branchDirty: branch ? readGitDirty(cwd) : false,
     })
   }
 

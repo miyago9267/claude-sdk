@@ -97,7 +97,12 @@ type model struct {
 
 	state uiState
 
-	branch string
+	branch      string
+	branchDirty bool
+
+	statusLine1 string
+	statusLine2 string
+	sessionStartedAt time.Time
 
 	transcript []string
 	// toolByID lets a tool-result event find the transcript line carrying
@@ -162,16 +167,25 @@ func newModel(uiOut io.Writer) *model {
 	)
 
 	return &model{
-		input:      ta,
-		spin:       sp,
-		out:        newWriter(uiOut),
-		toolByID:   map[string]toolEntry{},
-		mdRenderer: r,
-		mdStart:    -1,
+		input:            ta,
+		spin:             sp,
+		out:              newWriter(uiOut),
+		toolByID:         map[string]toolEntry{},
+		mdRenderer:       r,
+		mdStart:          -1,
+		sessionStartedAt: time.Now(),
 	}
 }
 
-func (m *model) Init() tea.Cmd { return tea.Batch(textarea.Blink, m.spin.Tick) }
+func (m *model) Init() tea.Cmd {
+	return tea.Batch(textarea.Blink, m.spin.Tick, tickEverySecond())
+}
+
+type secondTickMsg struct{}
+
+func tickEverySecond() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return secondTickMsg{} })
+}
 
 // ----------------------------------------------------------------------------
 
@@ -188,6 +202,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spin, cmd = m.spin.Update(msg)
 		m.refreshFooter()
 		return m, cmd
+
+	case secondTickMsg:
+		// Refresh elapsed time labels every second so the user sees the
+		// session timer and cooking-elapsed counter advance.
+		m.refreshStatusLines()
+		m.refreshFooter()
+		return m, tickEverySecond()
 
 	case hostMsg:
 		return m.applyHostEvent(msg.ev)
@@ -362,7 +383,9 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		m.model = ev.Model
 		m.cwd = ev.Cwd
 		m.branch = ev.Branch
+		m.branchDirty = ev.BranchDirty
 		m.refreshHeader()
+		m.refreshStatusLines()
 		m.refreshFooter()
 	case EvtTextDelta:
 		m.streamMarkdown(ev.Text)
@@ -418,6 +441,7 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 			m.compacts = ev.Compactions
 		}
 		m.refreshHeader()
+		m.refreshStatusLines()
 		m.state = stateIdle
 		m.refreshFooter()
 	case EvtError:
@@ -435,6 +459,9 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		}
 		if ev.Branch != "" {
 			m.branch = ev.Branch
+		}
+		if ev.Type == EvtBanner || ev.Branch != "" {
+			m.branchDirty = ev.BranchDirty
 		}
 		if ev.ContextTokens > 0 {
 			m.context = ev.ContextTokens
@@ -458,6 +485,7 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.refreshHeader()
+		m.refreshStatusLines()
 	case EvtBusy:
 		if ev.Reason == "true" {
 			m.state = stateBusy
@@ -486,11 +514,18 @@ func (m *model) View() string {
 	if !m.ready {
 		return ""
 	}
-	parts := []string{m.header, m.vp.View()}
+	parts := []string{m.vp.View()}
 	if popup := m.suggestionsView(); popup != "" {
 		parts = append(parts, popup)
 	}
-	parts = append(parts, m.inputBox(), m.footer)
+	parts = append(parts, m.inputBox())
+	if m.statusLine1 != "" {
+		parts = append(parts, m.statusLine1)
+	}
+	if m.statusLine2 != "" {
+		parts = append(parts, m.statusLine2)
+	}
+	parts = append(parts, m.footer)
 	return strings.Join(parts, "\n")
 }
 
@@ -562,7 +597,19 @@ func truncate(s string, n int) string {
 }
 
 func (m *model) layout() {
-	const headerH, footerH = 1, 1
+	const footerH = 1
+	statusH := 0
+	if m.statusLine1 != "" {
+		statusH++
+	}
+	if m.statusLine2 != "" {
+		statusH++
+	}
+	if statusH == 0 {
+		// Pre-banner phase: keep two slots reserved so footer doesn't jump
+		// once the first status arrives.
+		statusH = 2
+	}
 	inputH := m.input.Height() + 2
 	popupH := 0
 	if n := len(m.suggestList); n > 0 {
@@ -572,7 +619,7 @@ func (m *model) layout() {
 		// rows + separator + preview + 2 border lines
 		popupH = n + 2 + 2
 	}
-	vpH := m.h - headerH - footerH - inputH - popupH - 1
+	vpH := m.h - footerH - statusH - inputH - popupH - 1
 	if vpH < 3 {
 		vpH = 3
 	}
@@ -584,6 +631,7 @@ func (m *model) layout() {
 		m.vp.Height = vpH
 	}
 	m.input.SetWidth(m.w - 6)
+	m.refreshStatusLines()
 	if m.mdRenderer != nil {
 		// Re-init renderer with the current width so word wrap matches.
 		if r, err := glamour.NewTermRenderer(
@@ -664,42 +712,159 @@ func (m *model) refreshViewport() {
 	m.vp.GotoBottom()
 }
 
+// refreshHeader is a no-op now — all status info moved to the bottom
+// statusLines. Kept so existing call sites compile; we may revive it later
+// for a brand bar.
 func (m *model) refreshHeader() {
-	badge := func(bg, fg lipgloss.Color, text string) string {
-		return lipgloss.NewStyle().
-			Background(bg).
-			Foreground(fg).
-			Padding(0, 1).
-			Bold(true).
-			Render(text)
-	}
-	chip := func(bg, fg lipgloss.Color, text string) string {
-		return lipgloss.NewStyle().
-			Background(bg).
-			Foreground(fg).
-			Padding(0, 1).
-			Render(text)
+	m.header = ""
+}
+
+func (m *model) refreshStatusLines() {
+	m.statusLine1 = m.buildStatusLine1()
+	m.statusLine2 = m.buildStatusLine2()
+}
+
+// buildStatusLine1: model badge | short cwd + branch | session elapsed
+func (m *model) buildStatusLine1() string {
+	sep := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" │ ")
+	parts := []string{}
+
+	if m.model != "" {
+		bg, fg := modelColors(m.model)
+		label := m.model
+		if m.contextMax > 0 {
+			label = fmt.Sprintf("%s (%s)", m.model, humanTokens(m.contextMax))
+		}
+		parts = append(parts, lipgloss.NewStyle().
+			Background(bg).Foreground(fg).Padding(0, 1).Bold(true).Render(label))
 	}
 
-	parts := []string{badge(lipgloss.Color("57"), lipgloss.Color("231"), "claude-sdk")}
-	if m.model != "" {
-		mbg, mfg := modelColors(m.model)
-		parts = append(parts, badge(mbg, mfg, m.model))
+	if m.cwd != "" {
+		text := shortCwd(m.cwd)
+		if m.branch != "" {
+			marker := ""
+			if m.branchDirty {
+				marker = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("*")
+			}
+			text += " " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("git:(") +
+				lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(m.branch) +
+				marker +
+				lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(")")
+		}
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(text))
 	}
-	if m.branch != "" {
-		parts = append(parts, chip(lipgloss.Color("237"), lipgloss.Color("220"), "⎇ "+m.branch))
+
+	if !m.sessionStartedAt.IsZero() {
+		elapsed := time.Since(m.sessionStartedAt)
+		parts = append(parts, lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Render("⏱  "+formatDuration(elapsed)))
 	}
-	if m.context > 0 {
-		parts = append(parts, m.contextChip())
+
+	if len(parts) == 0 {
+		return ""
 	}
+	return strings.Join(parts, sep)
+}
+
+// buildStatusLine2: Context bar % | Cost | Compacts
+func (m *model) buildStatusLine2() string {
+	sep := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" │ ")
+	parts := []string{}
+
+	if m.context > 0 || m.contextMax > 0 {
+		var pct float64
+		if m.contextMax > 0 {
+			pct = float64(m.context) / float64(m.contextMax)
+			if pct > 1 {
+				pct = 1
+			}
+		}
+		color := contextSeverityColor(pct)
+		bar := renderProgressBar(pct, 10, color)
+		label := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("251")).
+			Render("Context")
+		valStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
+		percent := valStyle.Render(fmt.Sprintf("%.0f%%", pct*100))
+		count := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+			Render(fmt.Sprintf("(%s/%s)", humanTokens(m.context), humanTokens(m.contextMax)))
+		if m.contextMax <= 0 {
+			count = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+				Render(fmt.Sprintf("(~%s)", humanTokens(m.context)))
+			percent = ""
+		}
+		segs := []string{label, bar}
+		if percent != "" {
+			segs = append(segs, percent)
+		}
+		segs = append(segs, count)
+		parts = append(parts, strings.Join(segs, " "))
+	}
+
 	if m.cost > 0 {
-		parts = append(parts, chip(lipgloss.Color("237"), lipgloss.Color("215"), fmt.Sprintf("$%.4f", m.cost)))
+		parts = append(parts,
+			lipgloss.NewStyle().Foreground(lipgloss.Color("251")).Render("Cost ")+
+				lipgloss.NewStyle().Foreground(lipgloss.Color("215")).Bold(true).
+					Render(fmt.Sprintf("$%.4f", m.cost)))
 	}
+
 	if m.compacts > 0 {
-		parts = append(parts, chip(lipgloss.Color("237"), lipgloss.Color("141"), fmt.Sprintf("⏷ ×%d", m.compacts)))
+		parts = append(parts,
+			lipgloss.NewStyle().Foreground(lipgloss.Color("141")).
+				Render(fmt.Sprintf("⏷ ×%d", m.compacts)))
 	}
-	bg := lipgloss.NewStyle().Background(lipgloss.Color("234")).Width(m.w)
-	m.header = bg.Render(strings.Join(parts, ""))
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, sep)
+}
+
+func contextSeverityColor(pct float64) lipgloss.Color {
+	if pct >= 0.9 {
+		return lipgloss.Color("203")
+	}
+	if pct >= 0.7 {
+		return lipgloss.Color("214")
+	}
+	return lipgloss.Color("78")
+}
+
+// shortCwd reduces /Users/foo/Project/AI/claude-sdk to "AI/claude-sdk".
+func shortCwd(p string) string {
+	if p == "" {
+		return ""
+	}
+	parts := strings.Split(p, string(os.PathSeparator))
+	// drop empties from leading separator
+	clean := make([]string, 0, len(parts))
+	for _, s := range parts {
+		if s != "" {
+			clean = append(clean, s)
+		}
+	}
+	if len(clean) <= 2 {
+		return strings.Join(clean, "/")
+	}
+	return strings.Join(clean[len(clean)-2:], "/")
+}
+
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	h := int(d.Hours())
+	mm := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh %dm", h, mm)
+	case mm > 0:
+		return fmt.Sprintf("%dm %ds", mm, s)
+	default:
+		return fmt.Sprintf("%ds", s)
+	}
 }
 
 // modelColors returns a (bg, fg) tuple keyed by model family. opus → magenta,
@@ -767,22 +932,21 @@ func renderProgressBar(pct float64, width int, color lipgloss.Color) string {
 }
 
 func (m *model) refreshFooter() {
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	hint := "Enter send · Ctrl+J newline · /help · Ctrl+C exit"
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	hint := dim.Render("Enter send · Ctrl+J newline · /help · Ctrl+C exit")
 	if m.state == stateBusy {
 		elapsed := ""
 		if !m.turnStartedAt.IsZero() {
-			d := time.Since(m.turnStartedAt).Round(time.Second)
-			elapsed = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(d.String())
+			d := time.Since(m.turnStartedAt)
+			elapsed = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+				Render(formatDuration(d))
 		}
 		hint = m.spin.View() + " " +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("thinking…") +
-			elapsed + "  ·  Ctrl+C cancels"
+			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render("thinking…") +
+			elapsed +
+			dim.Render("  ·  Ctrl+C cancels")
 	}
-	if m.cwd != "" {
-		hint = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(m.cwd) + "  ·  " + hint
-	}
-	m.footer = style.Render(hint)
+	m.footer = hint
 }
 
 func renderToolUse(name, input, status string) string {

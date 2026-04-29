@@ -21,6 +21,7 @@ type HostEvent struct {
 	Model         string  `json:"model,omitempty"`
 	Cwd           string  `json:"cwd,omitempty"`
 	Branch        string  `json:"branch,omitempty"`
+	BranchDirty   bool    `json:"branchDirty,omitempty"`
 	ToolName      string  `json:"name,omitempty"`
 	ToolID        string  `json:"id,omitempty"`
 	ToolInput     string  `json:"input,omitempty"`
