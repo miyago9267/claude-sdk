@@ -28,6 +28,7 @@ import {
 import { ContextManager } from '../context-manager.ts'
 import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
+import { discoverCommands, discoverSkills, formatList } from './discover.ts'
 
 export interface TuiOptions {
   args: ParsedArgs
@@ -131,6 +132,19 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     model: sessionOptions.model,
     cwd: sessionOptions.cwd,
   })
+
+  // Surface installed slash commands and skills to the user once on startup.
+  // Lookup paths mirror the official CLI (~/.claude/commands, project
+  // .claude/commands, plugins/*/commands; same for skills).
+  const cwdForDiscovery = sessionOptions.cwd ?? process.cwd()
+  const cmdList = discoverCommands({ cwd: cwdForDiscovery })
+  const skillList = discoverSkills({ cwd: cwdForDiscovery })
+  if (cmdList.length || skillList.length) {
+    sendToTui({
+      type: 'status',
+      message: `${cmdList.length} commands · ${skillList.length} skills installed (try /commands /skills)`,
+    })
+  }
 
   const childExit = new Promise<void>((resolveExit) => {
     child.once('exit', () => resolveExit())
@@ -267,9 +281,22 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         sendToTui({
           type: 'status',
           message:
-            '/help /clear /model <id> /cwd [path] /self [on|off] /compact /status /exit',
+            'TS:  /help /clear /model /cwd /self /compact /status /commands /skills /exit\n' +
+            'SDK: any other /command (e.g. /init /agents /review) is forwarded to the SDK',
         })
         return
+
+      case '/commands': {
+        const list = discoverCommands({ cwd: sessionOptions.cwd ?? process.cwd() })
+        sendToTui({ type: 'status', message: formatList('Slash commands', list) })
+        return
+      }
+
+      case '/skills': {
+        const list = discoverSkills({ cwd: sessionOptions.cwd ?? process.cwd() })
+        sendToTui({ type: 'status', message: formatList('Skills', list) })
+        return
+      }
 
       case '/self': {
         const root = resolveSelfRoot()
@@ -343,7 +370,10 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         return
       }
       default:
-        sendToTui({ type: 'error', message: `unknown command: ${head}` })
+        // Anything we don't handle is forwarded to the SDK as a normal user
+        // input — cli.js's slash dispatcher will pick up /init, /agents,
+        // /review, /skill-name etc. from the underlying Claude Code install.
+        await runTurn(cmd)
     }
   }
 }

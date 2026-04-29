@@ -21,6 +21,11 @@ import { ContextManager } from '../context-manager.ts'
 import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
 import { c } from './colors.ts'
+import {
+  discoverCommands,
+  discoverSkills,
+  formatList,
+} from './discover.ts'
 
 export interface ReplOptions {
   args: ParsedArgs
@@ -59,6 +64,16 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
   printBanner(sessionOptions)
 
   const rl = createInterface({ input: process.stdin, output: process.stdout })
+
+  const cmdList = discoverCommands({ cwd: sessionOptions.cwd ?? process.cwd() })
+  const skillList = discoverSkills({ cwd: sessionOptions.cwd ?? process.cwd() })
+  if (cmdList.length || skillList.length) {
+    process.stderr.write(
+      c.gray(
+        `[discover] ${cmdList.length} commands · ${skillList.length} skills (try /commands /skills)\n`,
+      ),
+    )
+  }
 
   if (opts.seedPrompt) {
     await runTurn(opts.seedPrompt)
@@ -184,23 +199,43 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         }
         return false
 
+      case '/commands': {
+        const list = discoverCommands({ cwd: sessionOptions.cwd ?? process.cwd() })
+        process.stdout.write(formatList('Slash commands', list) + '\n')
+        return false
+      }
+
+      case '/skills': {
+        const list = discoverSkills({ cwd: sessionOptions.cwd ?? process.cwd() })
+        process.stdout.write(formatList('Skills', list) + '\n')
+        return false
+      }
+
       default:
-        process.stdout.write(c.yellow(`unknown command: ${cmd}. /help for list\n`))
+        // Forward unknown /commands to the SDK so cli.js's slash dispatcher
+        // can handle /init, /agents, /review, /skill-name etc.
+        await runTurn(input)
         return false
     }
   }
 }
 
 const SLASH_HELP = `\
-Slash commands:
+Slash commands handled here (TS side):
   /help            this list
   /exit, /quit     leave the REPL
   /clear           drop the current session and start a new one
   /model [id]      show or switch model (resets session)
   /cwd   [path]    show or switch working dir (resets session)
   /self  [on|off]  toggle self-edit mode (TUI only — REPL ignores)
+  /commands        list installed slash commands (project + user + plugins)
+  /skills          list installed skills (project + user + plugins)
   /compact         force ContextManager to run compact now
   /status          session id, cwd, context tokens, last turn cost
+
+Anything else (/init, /agents, /review, /skill-name, plugin commands…)
+is forwarded to the underlying SDK and handled by Claude Code's own
+slash dispatcher.
 `
 
 function printBanner(opts: SDKSessionOptions): void {
