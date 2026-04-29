@@ -65,6 +65,10 @@ interface HostEvent {
   contextWindow?: number
   costUSD?: number
   compactions?: number
+  usagePct?: number
+  usageRemainingSec?: number
+  usageBudgetUSD?: number
+  usageSpentUSD?: number
   message?: string
   reason?: string
   payload?: string
@@ -134,6 +138,17 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   let session: SDKSession = unstable_v2_createSession(sessionOptions)
   let sessionId: string | null = null
   let busy = false
+
+  // Best-effort Claude Max 5-hour window estimate. Anthropic doesn't expose
+  // the real quota over the SDK, so we accumulate per-turn cost deltas into
+  // a wall-clock 5h window and divide by a configurable budget.
+  const usageBudgetUSD = Number(process.env.CLAUDE_SDK_USAGE_BUDGET ?? '5')
+  const usageWindowMs = 5 * 60 * 60 * 1000
+  let usageWindowStart = Date.now()
+  let usageWindowCost = 0
+  let prevSessionCost: number | null = null
+
+  const resetSessionCostTracking = () => { prevSessionCost = null }
 
   // The Go binary opens /dev/tty itself for input/render, so stdin/stdout are
   // free to act as full-duplex IPC channels. stderr stays on the real TTY for
@@ -340,13 +355,39 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           sessionId = r.session_id
           manager.updateFromResult(r)
           sendToTui({ type: 'assistant-end' })
+          const cumCost = 'total_cost_usd' in r ? Number(r.total_cost_usd ?? 0) : 0
+          let delta = 0
+          if (prevSessionCost === null) {
+            delta = cumCost
+          } else if (cumCost >= prevSessionCost) {
+            delta = cumCost - prevSessionCost
+          } else {
+            delta = cumCost
+          }
+          prevSessionCost = cumCost
+
+          const now = Date.now()
+          if (now - usageWindowStart >= usageWindowMs) {
+            usageWindowStart = now
+            usageWindowCost = 0
+          }
+          usageWindowCost += delta
+          const remainingSec = Math.max(0, Math.round((usageWindowStart + usageWindowMs - now) / 1000))
+          const usagePct = usageBudgetUSD > 0
+            ? Math.min(1, usageWindowCost / usageBudgetUSD)
+            : 0
+
           sendToTui({
             type: 'result',
             sessionId: r.session_id,
             contextTokens: manager.getState().contextTokensEstimate,
             contextWindow: extractContextWindow(r),
-            costUSD: 'total_cost_usd' in r ? r.total_cost_usd : 0,
+            costUSD: cumCost,
             compactions: manager.getState().totalCompactions,
+            usagePct,
+            usageRemainingSec: remainingSec,
+            usageBudgetUSD,
+            usageSpentUSD: usageWindowCost,
           })
           await manager.checkWatermark()
           break
@@ -412,6 +453,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
+        resetSessionCostTracking()
         sendToTui({ type: 'status', message: 'session reset', model: sessionOptions.model })
         return
       case '/model': {
@@ -440,6 +482,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
+        resetSessionCostTracking()
         sendBanner()
         sendToTui({
           type: 'status',
@@ -453,6 +496,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           await safeCloseSession(session)
           session = unstable_v2_createSession(sessionOptions)
           sessionId = null
+          resetSessionCostTracking()
           sendBanner()
         } else {
           sendToTui({ type: 'status', message: sessionOptions.cwd ?? process.cwd() })

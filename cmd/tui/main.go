@@ -104,6 +104,15 @@ type model struct {
 	statusLine2 string
 	sessionStartedAt time.Time
 
+	// Estimated 5h Claude Max usage. Pushed by the TS host on every result;
+	// remainingSec is what the host reports at that instant — we tick it
+	// down locally each second between events.
+	usagePct          float64
+	usageRemainingSec int
+	usageBudgetUSD    float64
+	usageSpentUSD     float64
+	usageStampedAt    time.Time
+
 	transcript []string
 	// toolByID lets a tool-result event find the transcript line carrying
 	// the matching tool-use marker so we can rewrite it with the final
@@ -439,6 +448,13 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		}
 		if ev.Compactions > 0 {
 			m.compacts = ev.Compactions
+		}
+		if ev.UsageBudgetUSD > 0 || ev.UsageSpentUSD > 0 || ev.UsageRemainingSec > 0 {
+			m.usagePct = ev.UsagePct
+			m.usageRemainingSec = ev.UsageRemainingSec
+			m.usageBudgetUSD = ev.UsageBudgetUSD
+			m.usageSpentUSD = ev.UsageSpentUSD
+			m.usageStampedAt = time.Now()
 		}
 		m.refreshHeader()
 		m.refreshStatusLines()
@@ -815,10 +831,42 @@ func (m *model) buildStatusLine2() string {
 				Render(fmt.Sprintf("⏷ ×%d", m.compacts)))
 	}
 
+	if usage := m.buildUsageSegment(); usage != "" {
+		parts = append(parts, usage)
+	}
+
 	if len(parts) == 0 {
 		return ""
 	}
 	return strings.Join(parts, sep)
+}
+
+// buildUsageSegment renders the Usage progress bar with reset countdown.
+// Returns "" if the host hasn't pushed any usage estimate yet.
+func (m *model) buildUsageSegment() string {
+	if m.usageBudgetUSD <= 0 && m.usageSpentUSD <= 0 && m.usageRemainingSec <= 0 {
+		return ""
+	}
+	color := contextSeverityColor(m.usagePct)
+	bar := renderProgressBar(m.usagePct, 10, color)
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color("251")).Render("Usage")
+	pct := lipgloss.NewStyle().Foreground(color).Bold(true).
+		Render(fmt.Sprintf("%.0f%%", m.usagePct*100))
+
+	// Tick the remaining seconds down locally between server pushes so the
+	// countdown doesn't sit static.
+	remaining := m.usageRemainingSec
+	if !m.usageStampedAt.IsZero() {
+		drift := int(time.Since(m.usageStampedAt).Seconds())
+		remaining -= drift
+		if remaining < 0 {
+			remaining = 0
+		}
+	}
+	resets := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+		Render(fmt.Sprintf("(resets in %s)", formatDuration(time.Duration(remaining)*time.Second)))
+
+	return strings.Join([]string{label, bar, pct, resets}, " ")
 }
 
 func contextSeverityColor(pct float64) lipgloss.Color {

@@ -26,11 +26,15 @@ type HostEvent struct {
 	ToolID        string  `json:"id,omitempty"`
 	ToolInput     string  `json:"input,omitempty"`
 	OK            *bool   `json:"ok,omitempty"`
-	SessionID     string  `json:"sessionId,omitempty"`
-	ContextTokens int     `json:"contextTokens,omitempty"`
-	ContextWindow int     `json:"contextWindow,omitempty"`
-	CostUSD       float64 `json:"costUSD,omitempty"`
-	Compactions   int     `json:"compactions,omitempty"`
+	SessionID         string  `json:"sessionId,omitempty"`
+	ContextTokens     int     `json:"contextTokens,omitempty"`
+	ContextWindow     int     `json:"contextWindow,omitempty"`
+	CostUSD           float64 `json:"costUSD,omitempty"`
+	Compactions       int     `json:"compactions,omitempty"`
+	UsagePct          float64 `json:"usagePct,omitempty"`
+	UsageRemainingSec int     `json:"usageRemainingSec,omitempty"`
+	UsageBudgetUSD    float64 `json:"usageBudgetUSD,omitempty"`
+	UsageSpentUSD     float64 `json:"usageSpentUSD,omitempty"`
 	Message       string  `json:"message,omitempty"`
 	Reason        string  `json:"reason,omitempty"`
 	Payload       string  `json:"payload,omitempty"`
