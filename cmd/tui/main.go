@@ -29,8 +29,11 @@ const (
 func main() {
 	hostIn := os.NewFile(fdHostIn, "host-events")
 	uiOut := os.NewFile(fdUIOut, "ui-events")
-	if hostIn == nil || uiOut == nil {
-		fmt.Fprintln(os.Stderr, "tui: missing IPC fds 3/4 — run via `claude-sdk --tui`")
+	if hostIn == nil || uiOut == nil || !fdLive(hostIn) || !fdLive(uiOut) {
+		fmt.Fprintln(os.Stderr, "claude-sdk-tui: this binary expects IPC fds 3 and 4.")
+		fmt.Fprintln(os.Stderr, "Run it through the TS host instead:")
+		fmt.Fprintln(os.Stderr, "    claude-sdk --tui")
+		fmt.Fprintln(os.Stderr, "or programmatically via src/cli/tui.ts.")
 		os.Exit(2)
 	}
 
@@ -48,6 +51,17 @@ func pumpHostEvents(p *tea.Program, in *os.File) {
 		p.Send(hostMsg{ev: ev})
 	}
 	p.Send(hostMsg{ev: HostEvent{Type: "__eof__"}})
+}
+
+// fdLive returns true when the file descriptor backing f is actually open
+// and usable. os.NewFile happily wraps any fd number even if it isn't open,
+// so we have to probe — Stat fails with EBADF on a closed fd.
+func fdLive(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	_, err := f.Stat()
+	return err == nil
 }
 
 // ----------------------------------------------------------------------------
