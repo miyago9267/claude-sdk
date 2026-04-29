@@ -97,6 +97,8 @@ type model struct {
 
 	state uiState
 
+	branch string
+
 	transcript []string
 	// toolByID lets a tool-result event find the transcript line carrying
 	// the matching tool-use marker so we can rewrite it with the final
@@ -359,6 +361,7 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 	case EvtBanner:
 		m.model = ev.Model
 		m.cwd = ev.Cwd
+		m.branch = ev.Branch
 		m.refreshHeader()
 		m.refreshFooter()
 	case EvtTextDelta:
@@ -429,6 +432,9 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		}
 		if ev.Cwd != "" {
 			m.cwd = ev.Cwd
+		}
+		if ev.Branch != "" {
+			m.branch = ev.Branch
 		}
 		if ev.ContextTokens > 0 {
 			m.context = ev.ContextTokens
@@ -667,28 +673,48 @@ func (m *model) refreshHeader() {
 			Bold(true).
 			Render(text)
 	}
-	chip := func(fg lipgloss.Color, text string) string {
+	chip := func(bg, fg lipgloss.Color, text string) string {
 		return lipgloss.NewStyle().
+			Background(bg).
 			Foreground(fg).
 			Padding(0, 1).
 			Render(text)
 	}
 
-	parts := []string{badge(lipgloss.Color("63"), lipgloss.Color("231"), "claude-sdk")}
+	parts := []string{badge(lipgloss.Color("57"), lipgloss.Color("231"), "claude-sdk")}
 	if m.model != "" {
-		parts = append(parts, badge(lipgloss.Color("236"), lipgloss.Color("214"), m.model))
+		mbg, mfg := modelColors(m.model)
+		parts = append(parts, badge(mbg, mfg, m.model))
+	}
+	if m.branch != "" {
+		parts = append(parts, chip(lipgloss.Color("237"), lipgloss.Color("220"), "⎇ "+m.branch))
 	}
 	if m.context > 0 {
 		parts = append(parts, m.contextChip())
 	}
 	if m.cost > 0 {
-		parts = append(parts, chip(lipgloss.Color("214"), fmt.Sprintf("$%.4f", m.cost)))
+		parts = append(parts, chip(lipgloss.Color("237"), lipgloss.Color("215"), fmt.Sprintf("$%.4f", m.cost)))
 	}
 	if m.compacts > 0 {
-		parts = append(parts, chip(lipgloss.Color("141"), fmt.Sprintf("compact ×%d", m.compacts)))
+		parts = append(parts, chip(lipgloss.Color("237"), lipgloss.Color("141"), fmt.Sprintf("⏷ ×%d", m.compacts)))
 	}
 	bg := lipgloss.NewStyle().Background(lipgloss.Color("234")).Width(m.w)
 	m.header = bg.Render(strings.Join(parts, ""))
+}
+
+// modelColors returns a (bg, fg) tuple keyed by model family. opus → magenta,
+// sonnet → blue, haiku → green, anything else → neutral grey.
+func modelColors(model string) (lipgloss.Color, lipgloss.Color) {
+	switch {
+	case strings.Contains(model, "opus"):
+		return lipgloss.Color("162"), lipgloss.Color("231") // pink/magenta
+	case strings.Contains(model, "sonnet"):
+		return lipgloss.Color("33"), lipgloss.Color("231") // blue
+	case strings.Contains(model, "haiku"):
+		return lipgloss.Color("36"), lipgloss.Color("231") // teal/green
+	default:
+		return lipgloss.Color("240"), lipgloss.Color("231")
+	}
 }
 
 // contextChip renders either a numeric chip (when contextMax is unknown) or
@@ -696,6 +722,7 @@ func (m *model) refreshHeader() {
 func (m *model) contextChip() string {
 	if m.contextMax <= 0 {
 		return lipgloss.NewStyle().
+			Background(lipgloss.Color("237")).
 			Foreground(lipgloss.Color("245")).
 			Padding(0, 1).
 			Render(fmt.Sprintf("ctx ~%s", humanTokens(m.context)))
@@ -711,9 +738,16 @@ func (m *model) contextChip() string {
 	if pct >= 0.9 {
 		color = lipgloss.Color("203") // red
 	}
-	bar := renderProgressBar(pct, 8, color)
+	bar := renderProgressBar(pct, 10, color)
 	label := fmt.Sprintf("%s/%s %.0f%%", humanTokens(m.context), humanTokens(m.contextMax), pct*100)
-	return lipgloss.NewStyle().Padding(0, 1).Render(bar+" "+lipgloss.NewStyle().Foreground(color).Render(label))
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color("237")).
+		Padding(0, 1).
+		Render(bar + " " + lipgloss.NewStyle().
+			Background(lipgloss.Color("237")).
+			Foreground(color).
+			Bold(true).
+			Render(label))
 }
 
 func renderProgressBar(pct float64, width int, color lipgloss.Color) string {

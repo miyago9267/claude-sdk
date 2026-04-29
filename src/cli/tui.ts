@@ -31,6 +31,7 @@ import { buildSessionOptions } from './session-options.ts'
 import { discoverCommands, discoverSkills, formatList } from './discover.ts'
 import { safeCloseSession } from './safe-close.ts'
 import { resolveModel, formatKnownModels, KNOWN_MODELS } from './models.ts'
+import { readGitBranch } from './git-info.ts'
 
 export interface TuiOptions {
   args: ParsedArgs
@@ -53,6 +54,7 @@ interface HostEvent {
   text?: string
   model?: string
   cwd?: string
+  branch?: string
   name?: string
   id?: string
   input?: string
@@ -176,11 +178,17 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     },
   )
 
-  sendToTui({
-    type: 'banner',
-    model: sessionOptions.model,
-    cwd: sessionOptions.cwd,
-  })
+  sendBanner()
+
+  function sendBanner() {
+    const cwd = sessionOptions.cwd ?? process.cwd()
+    sendToTui({
+      type: 'banner',
+      model: sessionOptions.model,
+      cwd,
+      branch: readGitBranch(cwd) ?? '',
+    })
+  }
 
   // Surface installed slash commands and skills to the user once on startup.
   // Lookup paths mirror the official CLI (~/.claude/commands, project
@@ -429,7 +437,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
-        sendToTui({ type: 'banner', model: resolved, cwd: sessionOptions.cwd })
+        sendBanner()
         sendToTui({
           type: 'status',
           message: `model -> ${resolved}${arg !== resolved ? ` (from "${arg}")` : ''}`,
@@ -442,7 +450,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           await safeCloseSession(session)
           session = unstable_v2_createSession(sessionOptions)
           sessionId = null
-          sendToTui({ type: 'banner', model: sessionOptions.model, cwd: arg })
+          sendBanner()
         } else {
           sendToTui({ type: 'status', message: sessionOptions.cwd ?? process.cwd() })
         }

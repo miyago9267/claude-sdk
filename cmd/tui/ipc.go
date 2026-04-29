@@ -20,6 +20,7 @@ type HostEvent struct {
 	Text          string  `json:"text,omitempty"`
 	Model         string  `json:"model,omitempty"`
 	Cwd           string  `json:"cwd,omitempty"`
+	Branch        string  `json:"branch,omitempty"`
 	ToolName      string  `json:"name,omitempty"`
 	ToolID        string  `json:"id,omitempty"`
 	ToolInput     string  `json:"input,omitempty"`
