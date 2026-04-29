@@ -273,15 +273,53 @@ func (m *model) recomputeSuggestions() {
 	}
 }
 
+// filterCandidates handles two modes:
+//   - command mode  ("/m"   → /model, /memory, ...)
+//   - argument mode ("/model so" → opus, sonnet, ...) once the user typed
+//     a space after a command that publishes static args.
 func filterCandidates(pool []Candidate, value string) []Candidate {
-	if !strings.HasPrefix(value, "/") || strings.ContainsAny(value, " \n\t") {
+	if !strings.HasPrefix(value, "/") {
 		return nil
 	}
-	prefix := value
+	if strings.ContainsAny(value, "\n\t") {
+		return nil
+	}
+
+	spaceIdx := strings.Index(value, " ")
+	if spaceIdx < 0 {
+		out := make([]Candidate, 0, popupMaxRows)
+		for _, c := range pool {
+			if strings.HasPrefix(c.Name, value) {
+				out = append(out, c)
+				if len(out) >= popupMaxRows*4 {
+					break
+				}
+			}
+		}
+		return out
+	}
+
+	cmdName := value[:spaceIdx]
+	argPrefix := strings.TrimLeft(value[spaceIdx:], " ")
+
+	var cmd *Candidate
+	for i := range pool {
+		if pool[i].Name == cmdName {
+			cmd = &pool[i]
+			break
+		}
+	}
+	if cmd == nil || len(cmd.Args) == 0 {
+		return nil
+	}
 	out := make([]Candidate, 0, popupMaxRows)
-	for _, c := range pool {
-		if strings.HasPrefix(c.Name, prefix) {
-			out = append(out, c)
+	for _, a := range cmd.Args {
+		if strings.HasPrefix(a.Name, argPrefix) {
+			out = append(out, Candidate{
+				Name:        a.Name,
+				Description: a.Description,
+				Source:      "arg",
+			})
 			if len(out) >= popupMaxRows*4 {
 				break
 			}
@@ -295,10 +333,24 @@ func (m *model) applySuggestion() {
 		return
 	}
 	chosen := m.suggestList[m.suggestIdx].Name
-	m.input.SetValue(chosen + " ")
-	m.input.SetCursor(len(chosen) + 1)
-	m.suggestList = nil
+	value := m.input.Value()
+
+	spaceIdx := strings.Index(value, " ")
+	var newVal string
+	if spaceIdx < 0 {
+		// command mode → "/cmd " so the next keystroke reveals arg suggestions
+		newVal = chosen + " "
+	} else {
+		// arg mode → replace whatever the user partly typed after the command
+		cmdPart := value[:spaceIdx]
+		newVal = cmdPart + " " + chosen
+	}
+	m.input.SetValue(newVal)
+	m.input.SetCursor(len(newVal))
 	m.suggestIdx = 0
+	// Don't clear suggestList here; recomputeSuggestions decides whether the
+	// new value (now with trailing space) triggers the second-level popup.
+	m.recomputeSuggestions()
 	m.layout()
 }
 

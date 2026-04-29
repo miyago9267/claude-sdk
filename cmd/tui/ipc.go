@@ -57,9 +57,17 @@ type Capabilities struct {
 }
 
 type Candidate struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	Source      string      `json:"source,omitempty"`
+	Args        []ArgOption `json:"args,omitempty"`
+}
+
+// ArgOption is a value the user can pass to a command (e.g. /model claude-opus-4-7).
+// We only carry static, enumerable args; dynamic ones (like /cwd <path>) skip this.
+type ArgOption struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	Source      string `json:"source,omitempty"`
 }
 
 // UIEvent is anything we send back to the TS host (typed user actions).
