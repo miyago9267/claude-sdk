@@ -27,6 +27,7 @@ import {
   discoverSkills,
   formatList,
 } from './discover.ts'
+import { resolveModel, formatKnownModels } from './models.ts'
 
 export interface ReplOptions {
   args: ParsedArgs
@@ -153,17 +154,29 @@ export async function runRepl(opts: ReplOptions): Promise<void> {
         process.stdout.write(c.green('session reset\n'))
         return false
 
-      case '/model':
+      case '/model': {
         if (!arg) {
-          process.stdout.write(`current model: ${sessionOptions.model}\n`)
+          process.stdout.write(`current model: ${sessionOptions.model}\n\n${formatKnownModels()}\n`)
+          process.stdout.write(`use: /model <alias|id>   e.g. /model opus  or  /model claude-opus-4-6\n`)
           return false
         }
-        sessionOptions = { ...sessionOptions, model: arg }
+        const { model: resolved, known } = resolveModel(arg)
+        if (!resolved) {
+          process.stdout.write(c.red(`empty model name\n`))
+          return false
+        }
+        if (!known) {
+          process.stdout.write(c.yellow(`Note: "${resolved}" is not in the known list — trying anyway.\n`))
+        }
+        sessionOptions = { ...sessionOptions, model: resolved }
         await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
-        process.stdout.write(c.green(`model -> ${arg} (session reset)\n`))
+        process.stdout.write(
+          c.green(`model -> ${resolved}${arg !== resolved ? ` (from "${arg}")` : ''} (session reset)\n`),
+        )
         return false
+      }
 
       case '/compact':
         await manager.checkWatermark()

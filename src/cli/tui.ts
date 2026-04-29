@@ -30,6 +30,7 @@ import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
 import { discoverCommands, discoverSkills, formatList } from './discover.ts'
 import { safeCloseSession } from './safe-close.ts'
+import { resolveModel, formatKnownModels, KNOWN_MODELS } from './models.ts'
 
 export interface TuiOptions {
   args: ParsedArgs
@@ -368,17 +369,39 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         sessionId = null
         sendToTui({ type: 'status', message: 'session reset', model: sessionOptions.model })
         return
-      case '/model':
+      case '/model': {
         if (!arg) {
-          sendToTui({ type: 'status', message: `current model: ${sessionOptions.model}` })
+          sendToTui({
+            type: 'status',
+            message:
+              `current model: ${sessionOptions.model}\n` +
+              `\n${formatKnownModels()}\n` +
+              `\nuse: /model <alias|id>   e.g. /model opus  or  /model claude-opus-4-6`,
+          })
           return
         }
-        sessionOptions = { ...sessionOptions, model: arg }
+        const { model: resolved, known } = resolveModel(arg)
+        if (!resolved) {
+          sendToTui({ type: 'error', message: `Empty model name. ${formatKnownModels()}` })
+          return
+        }
+        if (!known) {
+          sendToTui({
+            type: 'status',
+            message: `Note: "${resolved}" is not in the known list — trying anyway.`,
+          })
+        }
+        sessionOptions = { ...sessionOptions, model: resolved }
         await safeCloseSession(session)
         session = unstable_v2_createSession(sessionOptions)
         sessionId = null
-        sendToTui({ type: 'banner', model: arg, cwd: sessionOptions.cwd })
+        sendToTui({ type: 'banner', model: resolved, cwd: sessionOptions.cwd })
+        sendToTui({
+          type: 'status',
+          message: `model -> ${resolved}${arg !== resolved ? ` (from "${arg}")` : ''}`,
+        })
         return
+      }
       case '/cwd':
         if (arg) {
           sessionOptions = { ...sessionOptions, cwd: arg } as SDKSessionOptions
