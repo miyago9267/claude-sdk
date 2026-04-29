@@ -30,6 +30,7 @@ type HostEvent struct {
 	Compactions   int     `json:"compactions,omitempty"`
 	Message       string  `json:"message,omitempty"`
 	Reason        string  `json:"reason,omitempty"`
+	Payload       string  `json:"payload,omitempty"`
 }
 
 // HostEventTypes documents every value of HostEvent.Type. Comments here are
@@ -45,7 +46,20 @@ const (
 	EvtStatus       = "status"        // pushed status snapshot
 	EvtBusy         = "busy"          // host is mid-turn (true/false via Reason)
 	EvtThinking     = "thinking"      // model is in thinking phase
+	EvtCapabilities = "capabilities"  // discovered commands/skills (Payload is JSON)
 )
+
+// Capabilities is the parsed payload of an EvtCapabilities event.
+type Capabilities struct {
+	Commands []Candidate `json:"commands"`
+	Skills   []Candidate `json:"skills"`
+}
+
+type Candidate struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Source      string `json:"source,omitempty"`
+}
 
 // UIEvent is anything we send back to the TS host (typed user actions).
 type UIEvent struct {

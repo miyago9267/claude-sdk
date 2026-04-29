@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -98,12 +99,21 @@ type model struct {
 	// instead of dropping the result on a fresh line.
 	toolByID map[string]int
 
-	vp      viewport.Model
-	input   textarea.Model
-	spin    spinner.Model
-	out     *writer
-	ready   bool
+	// Slash-command autocomplete: full pool from EvtCapabilities, current
+	// filtered subset based on the input value, and which one is highlighted.
+	allCommands  []Candidate
+	skills       []Candidate
+	suggestList  []Candidate
+	suggestIdx   int
+
+	vp    viewport.Model
+	input textarea.Model
+	spin  spinner.Model
+	out   *writer
+	ready bool
 }
+
+const popupMaxRows = 6
 
 func newModel(uiOut io.Writer) *model {
 	ta := textarea.New()
@@ -153,6 +163,32 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
 			m.out.send(UIEvent{Type: UIExit})
 			return m, tea.Quit
+		case tea.KeyEsc:
+			if len(m.suggestList) > 0 {
+				m.suggestList = nil
+				m.suggestIdx = 0
+				m.layout()
+				return m, nil
+			}
+		case tea.KeyTab:
+			if len(m.suggestList) > 0 {
+				m.applySuggestion()
+				return m, nil
+			}
+		case tea.KeyUp:
+			if len(m.suggestList) > 0 {
+				if m.suggestIdx > 0 {
+					m.suggestIdx--
+				}
+				return m, nil
+			}
+		case tea.KeyDown:
+			if len(m.suggestList) > 0 {
+				if m.suggestIdx < len(m.suggestList)-1 {
+					m.suggestIdx++
+				}
+				return m, nil
+			}
 		case tea.KeyEnter:
 			// Plain Enter submits; Ctrl+J inserts a newline (handled below).
 			text := strings.TrimSpace(m.input.Value())
@@ -182,7 +218,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			return m, cmd
-		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd:
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg)
 			return m, cmd
@@ -191,7 +227,49 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.recomputeSuggestions()
 	return m, cmd
+}
+
+func (m *model) recomputeSuggestions() {
+	value := m.input.Value()
+	prev := len(m.suggestList)
+	m.suggestList = filterCandidates(m.allCommands, value)
+	if m.suggestIdx >= len(m.suggestList) {
+		m.suggestIdx = 0
+	}
+	if (prev == 0) != (len(m.suggestList) == 0) {
+		m.layout()
+	}
+}
+
+func filterCandidates(pool []Candidate, value string) []Candidate {
+	if !strings.HasPrefix(value, "/") || strings.ContainsAny(value, " \n\t") {
+		return nil
+	}
+	prefix := value
+	out := make([]Candidate, 0, popupMaxRows)
+	for _, c := range pool {
+		if strings.HasPrefix(c.Name, prefix) {
+			out = append(out, c)
+			if len(out) >= popupMaxRows*4 {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (m *model) applySuggestion() {
+	if m.suggestIdx >= len(m.suggestList) {
+		return
+	}
+	chosen := m.suggestList[m.suggestIdx].Name
+	m.input.SetValue(chosen + " ")
+	m.input.SetCursor(len(chosen) + 1)
+	m.suggestList = nil
+	m.suggestIdx = 0
+	m.layout()
 }
 
 func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
@@ -258,6 +336,12 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 			m.state = stateIdle
 		}
 		m.refreshFooter()
+	case EvtCapabilities:
+		var caps Capabilities
+		if err := json.Unmarshal([]byte(ev.Payload), &caps); err == nil {
+			m.allCommands = caps.Commands
+			m.skills = caps.Skills
+		}
 	case "__eof__":
 		return m, tea.Quit
 	}
@@ -271,12 +355,12 @@ func (m *model) View() string {
 	if !m.ready {
 		return ""
 	}
-	return strings.Join([]string{
-		m.header,
-		m.vp.View(),
-		m.inputBox(),
-		m.footer,
-	}, "\n")
+	parts := []string{m.header, m.vp.View()}
+	if popup := m.suggestionsView(); popup != "" {
+		parts = append(parts, popup)
+	}
+	parts = append(parts, m.inputBox(), m.footer)
+	return strings.Join(parts, "\n")
 }
 
 func (m *model) inputBox() string {
@@ -288,10 +372,63 @@ func (m *model) inputBox() string {
 	return border.Render(m.input.View())
 }
 
+func (m *model) suggestionsView() string {
+	if len(m.suggestList) == 0 {
+		return ""
+	}
+	rows := m.suggestList
+	if len(rows) > popupMaxRows {
+		rows = rows[:popupMaxRows]
+	}
+	itemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	srcStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("105"))
+	sel := lipgloss.NewStyle().
+		Background(lipgloss.Color("63")).
+		Foreground(lipgloss.Color("231")).
+		Bold(true)
+	lines := make([]string, 0, len(rows))
+	for i, c := range rows {
+		name := c.Name
+		src := ""
+		if c.Source != "" {
+			src = srcStyle.Render(" [" + c.Source + "]")
+		}
+		desc := ""
+		if c.Description != "" {
+			desc = descStyle.Render("  " + truncate(c.Description, m.w-len(name)-len(c.Source)-12))
+		}
+		line := itemStyle.Render(" "+name) + src + desc
+		if i == m.suggestIdx {
+			line = sel.Width(m.w - 2).Render(" "+name) + src + desc
+		}
+		lines = append(lines, line)
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("241")).
+		Width(m.w - 2)
+	return box.Render(strings.Join(lines, "\n"))
+}
+
+func truncate(s string, n int) string {
+	if n <= 1 || len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
 func (m *model) layout() {
 	const headerH, footerH = 1, 1
 	inputH := m.input.Height() + 2
-	vpH := m.h - headerH - footerH - inputH - 1
+	popupH := 0
+	if n := len(m.suggestList); n > 0 {
+		if n > popupMaxRows {
+			n = popupMaxRows
+		}
+		popupH = n + 2
+	}
+	vpH := m.h - headerH - footerH - inputH - popupH - 1
 	if vpH < 3 {
 		vpH = 3
 	}

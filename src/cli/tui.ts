@@ -48,6 +48,7 @@ interface HostEvent {
     | 'status'
     | 'busy'
     | 'thinking'
+    | 'capabilities'
   text?: string
   model?: string
   cwd?: string
@@ -61,7 +62,22 @@ interface HostEvent {
   compactions?: number
   message?: string
   reason?: string
+  payload?: string
 }
+
+const TS_BUILTIN_COMMANDS = [
+  { name: '/help', source: 'built-in', description: 'show available slash commands' },
+  { name: '/clear', source: 'built-in', description: 'reset the current session' },
+  { name: '/model', source: 'built-in', description: 'show or switch model (resets session)' },
+  { name: '/cwd', source: 'built-in', description: 'show or switch working directory' },
+  { name: '/self', source: 'built-in', description: 'toggle self-edit mode (add claude-sdk root)' },
+  { name: '/compact', source: 'built-in', description: 'force ContextManager compact now' },
+  { name: '/status', source: 'built-in', description: 'session id, cwd, context tokens, cost' },
+  { name: '/commands', source: 'built-in', description: 'list installed slash commands' },
+  { name: '/skills', source: 'built-in', description: 'list installed skills' },
+  { name: '/exit', source: 'built-in', description: 'leave the TUI' },
+  { name: '/quit', source: 'built-in', description: 'leave the TUI' },
+] as const
 
 interface UIEvent {
   type: 'prompt' | 'slash' | 'exit'
@@ -140,10 +156,32 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   const cwdForDiscovery = sessionOptions.cwd ?? process.cwd()
   const cmdList = discoverCommands({ cwd: cwdForDiscovery })
   const skillList = discoverSkills({ cwd: cwdForDiscovery })
+  pushCapabilities(cmdList, skillList)
   if (cmdList.length || skillList.length) {
     sendToTui({
       type: 'status',
       message: `${cmdList.length} commands · ${skillList.length} skills installed (try /commands /skills)`,
+    })
+  }
+
+  function pushCapabilities(
+    cmds: Array<{ name: string; source: string; description?: string }>,
+    skills: Array<{ name: string; source: string; description?: string }>,
+  ) {
+    const allCommands = [
+      ...TS_BUILTIN_COMMANDS,
+      ...cmds.map((c) => ({ name: c.name, source: c.source, description: c.description ?? '' })),
+    ]
+    sendToTui({
+      type: 'capabilities',
+      payload: JSON.stringify({
+        commands: allCommands,
+        skills: skills.map((s) => ({
+          name: s.name,
+          source: s.source,
+          description: s.description ?? '',
+        })),
+      }),
     })
   }
 
