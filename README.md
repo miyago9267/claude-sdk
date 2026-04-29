@@ -206,6 +206,58 @@ Key anchor strings for relocating minified functions:
 
 Full anchor index: [`docs/leaarning/sdk-anchor-index-v76.md`](docs/leaarning/sdk-anchor-index-v76.md)
 
+## OpenAI-Compatible Adapter
+
+Expose any Claude session as an OpenAI Chat Completions endpoint so external
+tools (GitHub Copilot, Open Interpreter, etc.) can talk to it.
+
+```bash
+# Standalone server
+claude-sdk --serve --port 4141
+
+# Or programmatic
+```
+
+```typescript
+import { serveOpenAIAdapter } from '@miyago/claude-sdk/openai'
+
+serveOpenAIAdapter({
+  port: 4141,
+  config: { defaultModel: 'claude-sonnet-4-6' },
+})
+```
+
+```bash
+curl http://127.0.0.1:4141/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "stream": true,
+    "messages": [{"role": "user", "content": "Hi"}]
+  }'
+```
+
+Stateless adapter: each request opens a fresh V2 session, runs Claude's
+built-in tool chain server-side, and streams `data: {...}` chunks in OpenAI
+SSE format. See `docs/specs/openai-cli-layers/SPEC.md` for ADRs.
+
+## CLI Harness
+
+```bash
+# One-shot
+claude-sdk "Summarise this repo"
+echo "What is 2+2?" | claude-sdk -m claude-haiku-4-5
+
+# REPL with auto context-compact
+claude-sdk
+
+# Serve OpenAI adapter
+claude-sdk --serve --port 4141
+```
+
+The CLI wraps a V2 persistent session and `ContextManager` (auto-compact at
+150K tokens by default).
+
 ## Exports
 
 ```typescript
@@ -218,6 +270,17 @@ import {
   RECOMMENDED_SUBPROCESS_ENV,
   diffCumulativeModelUsage,
 } from '@miyago/claude-sdk/context'
+
+// OpenAI adapter (transformers + Hono server)
+import {
+  buildPromptFromOpenAIMessages,
+  StreamingChunkConverter,
+  createOpenAIServer,
+  serveOpenAIAdapter,
+} from '@miyago/claude-sdk/openai'
+
+// CLI primitives (also accessible via `bin: claude-sdk`)
+import { runOneShot, runRepl, parseArgs } from '@miyago/claude-sdk/cli'
 ```
 
 ## Important Notes

@@ -1,11 +1,14 @@
 {
   "name": "@miyago/claude-sdk",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "private": false,
-  "description": "Patched Claude Agent SDK — V2 persistent session, context management, cache keepalive, model routing, token tracking",
+  "description": "Patched Claude Agent SDK — V2 persistent session, context management, OpenAI-compatible adapter, CLI harness",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "bin": {
+    "claude-sdk": "src/cli/bin.ts"
+  },
   "exports": {
     ".": {
       "bun": "./src/index.ts",
@@ -18,6 +21,18 @@
       "types": "./src/context-manager.ts",
       "import": "./src/context-manager.ts",
       "default": "./src/context-manager.ts"
+    },
+    "./openai": {
+      "bun": "./src/openai/index.ts",
+      "types": "./src/openai/index.ts",
+      "import": "./src/openai/index.ts",
+      "default": "./src/openai/index.ts"
+    },
+    "./cli": {
+      "bun": "./src/cli/index.ts",
+      "types": "./src/cli/index.ts",
+      "import": "./src/cli/index.ts",
+      "default": "./src/cli/index.ts"
     }
   },
   "scripts": {
@@ -25,10 +40,12 @@
     "patch:check": "bash scripts/patch-v2.sh --check",
     "patch:v2": "bash scripts/patch-v2.sh",
     "patch:cli": "bash scripts/patch.sh",
-    "test": "bun test src/"
+    "test": "bun test src/",
+    "serve": "bun src/cli/bin.ts --serve"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.90"
+    "@anthropic-ai/claude-agent-sdk": "0.2.90",
+    "hono": "^4.12.15"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
@@ -37,6 +54,8 @@
     "src/index.ts",
     "src/context-manager.ts",
     "src/optimize/",
+    "src/openai/",
+    "src/cli/",
     "scripts/patch-v2.mjs",
     "scripts/patch-v2.sh",
     "scripts/patch.sh",
@@ -53,6 +72,8 @@
     "agent-sdk",
     "prompt-caching",
     "persistent-session",
-    "context-management"
+    "context-management",
+    "openai-compatible",
+    "cli"
   ]
 }
