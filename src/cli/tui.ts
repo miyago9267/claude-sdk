@@ -10,9 +10,10 @@
  * the Go side in cmd/tui/ipc.go — keep both in sync.
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, createWriteStream, type WriteStream } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { dirname, resolve, join as pjoin } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 
@@ -92,9 +93,11 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     return
   }
 
+  const debug = openDebugLog()
   const sendToTui = (ev: HostEvent) => {
     if (hostOut.destroyed) return
     hostOut.write(JSON.stringify(ev) + '\n')
+    debug?.write(`[->tui] ${ev.type} ${ev.text ? JSON.stringify(ev.text.slice(0, 80)) : ''}\n`)
   }
 
   const log = (line: string) => sendToTui({ type: 'status', message: line })
@@ -160,12 +163,15 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     if (!prompt.trim() || busy) return
     busy = true
     sendToTui({ type: 'busy', reason: 'true' })
+    let streamedText = false
     try {
       await session.send(prompt)
       for await (const msg of session.stream()) {
+        debug?.write(`[<-sdk] ${msg.type}\n`)
         if (msg.type === 'stream_event') {
           const e = msg.event
           if (e.type === 'content_block_delta' && e.delta.type === 'text_delta') {
+            streamedText = true
             sendToTui({ type: 'text-delta', text: e.delta.text })
           }
           if (e.type === 'content_block_start' && e.content_block.type === 'tool_use') {
@@ -176,6 +182,25 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         if (msg.type === 'assistant') {
           const am = msg as SDKAssistantMessage
           if (am.error) sendToTui({ type: 'error', message: String(am.error) })
+          // Fallback: if we never saw a streamed text delta for this turn,
+          // emit the assistant message's text content blocks all at once so
+          // the user actually sees the response.
+          if (!streamedText) {
+            const blocks = (am.message?.content ?? []) as Array<Record<string, unknown>>
+            for (const b of blocks) {
+              if (b?.type === 'text' && typeof b.text === 'string') {
+                sendToTui({ type: 'text-delta', text: b.text as string })
+                streamedText = true
+              }
+              if (b?.type === 'tool_use' && typeof b.name === 'string') {
+                sendToTui({
+                  type: 'tool-use',
+                  name: b.name as string,
+                  id: typeof b.id === 'string' ? (b.id as string) : '',
+                })
+              }
+            }
+          }
         }
         if (msg.type === 'result') {
           const r = msg as SDKResultMessage
@@ -286,4 +311,24 @@ async function* readNdjson(stream: Readable): AsyncGenerator<UIEvent> {
 function resolveBinary(): string {
   const here = dirname(fileURLToPath(import.meta.url))
   return resolve(here, '../../bin/claude-sdk-tui')
+}
+
+function openDebugLog(): WriteStream | null {
+  if (!process.env.CLAUDE_SDK_TUI_DEBUG) {
+    const logPath = pjoin(tmpdir(), 'claude-sdk-tui.log')
+    try {
+      const s = createWriteStream(logPath, { flags: 'a' })
+      s.write(`\n--- ${new Date().toISOString()} session start ---\n`)
+      return s
+    } catch {
+      return null
+    }
+  }
+  try {
+    const s = createWriteStream(process.env.CLAUDE_SDK_TUI_DEBUG, { flags: 'a' })
+    s.write(`\n--- ${new Date().toISOString()} session start ---\n`)
+    return s
+  } catch {
+    return null
+  }
 }

@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -93,24 +93,27 @@ type model struct {
 
 	transcript []string
 	vp         viewport.Model
-	input      textinput.Model
+	input      textarea.Model
 	out        *writer
 	ready      bool
 }
 
 func newModel(uiOut io.Writer) *model {
-	in := textinput.New()
-	in.Placeholder = "Type a prompt or /help. Ctrl+C exits."
-	in.Focus()
-	in.CharLimit = 4096
-	in.Prompt = "> "
+	ta := textarea.New()
+	ta.Placeholder = "Ask Claude anything. Enter to send, Ctrl+J newline."
+	ta.Prompt = "│ "
+	ta.CharLimit = 8192
+	ta.SetHeight(3)
+	ta.ShowLineNumbers = false
+	ta.Focus()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	return &model{
-		input: in,
+		input: ta,
 		out:   newWriter(uiOut),
 	}
 }
 
-func (m *model) Init() tea.Cmd { return textinput.Blink }
+func (m *model) Init() tea.Cmd { return textarea.Blink }
 
 // ----------------------------------------------------------------------------
 
@@ -131,11 +134,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.out.send(UIEvent{Type: UIExit})
 			return m, tea.Quit
 		case tea.KeyEnter:
+			// Plain Enter submits; Ctrl+J inserts a newline (handled below).
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
 			}
-			m.input.SetValue("")
+			m.input.Reset()
 			if strings.HasPrefix(text, "/") {
 				if text == "/exit" || text == "/quit" {
 					m.out.send(UIEvent{Type: UIExit})
@@ -145,12 +149,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.out.send(UIEvent{Type: UISlash, Cmd: text})
 				return m, nil
 			}
-			m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("> " + text))
+			for _, line := range strings.Split(text, "\n") {
+				m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("> " + line))
+			}
 			m.appendLine("")
 			m.state = stateBusy
 			m.refreshFooter()
 			m.out.send(UIEvent{Type: UIPrompt, Text: text})
 			return m, nil
+		case tea.KeyCtrlJ:
+			// Pass through to textarea so it inserts a newline.
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			return m, cmd
 		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg)
@@ -229,13 +240,23 @@ func (m *model) View() string {
 	return strings.Join([]string{
 		m.header,
 		m.vp.View(),
-		m.input.View(),
+		m.inputBox(),
 		m.footer,
 	}, "\n")
 }
 
+func (m *model) inputBox() string {
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Padding(0, 1).
+		Width(m.w - 2)
+	return border.Render(m.input.View())
+}
+
 func (m *model) layout() {
-	headerH, footerH, inputH := 1, 1, 1
+	const headerH, footerH = 1, 1
+	inputH := m.input.Height() + 2
 	vpH := m.h - headerH - footerH - inputH - 1
 	if vpH < 3 {
 		vpH = 3
@@ -247,7 +268,7 @@ func (m *model) layout() {
 		m.vp.Width = m.w
 		m.vp.Height = vpH
 	}
-	m.input.Width = m.w - 2
+	m.input.SetWidth(m.w - 6)
 	m.refreshHeader()
 	m.refreshFooter()
 	m.vp.SetContent(strings.Join(m.transcript, "\n"))
@@ -298,12 +319,12 @@ func (m *model) refreshFooter() {
 	if m.state == stateBusy {
 		style = style.Foreground(lipgloss.Color("214"))
 	}
-	hint := "/help · /exit · Ctrl+C exit"
+	hint := "Enter send · Ctrl+J newline · /help · Ctrl+C exit"
 	if m.state == stateBusy {
-		hint = "thinking… · /exit to quit"
+		hint = "thinking… · Ctrl+C cancels"
 	}
 	if m.cwd != "" {
-		hint = m.cwd + " · " + hint
+		hint = m.cwd + "  ·  " + hint
 	}
 	m.footer = style.Render(hint)
 }
