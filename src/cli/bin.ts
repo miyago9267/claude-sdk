@@ -5,7 +5,7 @@
  *
  * Dispatch:
  *   --help / --version          → print and exit
- *   --serve                     → OpenAI HTTP adapter
+ *   --ollama                    → Ollama-compatible HTTP bridge
  *   -p / --print or stdin pipe  → one-shot
  *   prompt arg without -p       → REPL with seeded first turn (matches
  *                                 official behaviour)
@@ -66,9 +66,9 @@ async function main(): Promise<void> {
     return
   }
 
-  if (args.mode === 'serve') {
-    const { serveOpenAIAdapter } = await import('../openai/server.ts')
-    const handle = serveOpenAIAdapter({
+  if (args.mode === 'ollama') {
+    const { serveOllamaBridge } = await import('../ollama/server.ts')
+    const handle = serveOllamaBridge({
       port: args.port,
       hostname: args.host,
       config: {
@@ -80,9 +80,11 @@ async function main(): Promise<void> {
         maxTurns: args.maxTurns,
       },
     })
-    process.stdout.write(`OpenAI adapter listening on ${handle.url}\n`)
-    process.stdout.write(`  POST ${handle.url}/v1/chat/completions\n`)
-    process.stdout.write(`  GET  ${handle.url}/v1/models\n`)
+    process.stdout.write(`Ollama bridge listening on ${handle.url}\n`)
+    process.stdout.write(`  GET  ${handle.url}/api/tags\n`)
+    process.stdout.write(`  POST ${handle.url}/api/show\n`)
+    process.stdout.write(`  POST ${handle.url}/api/chat\n`)
+    process.stdout.write(`Point GitHub Copilot Chat → Manage Models → Ollama at this URL.\n`)
     const stop = () => {
       handle.stop()
       process.exit(0)

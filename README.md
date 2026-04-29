@@ -206,40 +206,55 @@ Key anchor strings for relocating minified functions:
 
 Full anchor index: [`docs/leaarning/sdk-anchor-index-v76.md`](docs/leaarning/sdk-anchor-index-v76.md)
 
-## OpenAI-Compatible Adapter
+## Ollama-Compatible Bridge
 
-Expose any Claude session as an OpenAI Chat Completions endpoint so external
-tools (GitHub Copilot, Open Interpreter, etc.) can talk to it.
+Expose Claude as a local Ollama server so IDE clients that speak the Ollama
+HTTP API (GitHub Copilot Chat / Manage Models, AI Toolkit, etc.) can pick
+Claude as their model. The bridge listens on Ollama's default port (11434) so
+no client-side configuration tweaks are needed beyond pointing at the URL.
 
 ```bash
-# Standalone server
-claude-sdk --serve --port 4141
+# Standalone server (default port 11434, falls back to 41434 if busy)
+claude-sdk --ollama
 
 # Or programmatic
 ```
 
 ```typescript
-import { serveOpenAIAdapter } from '@miyago/claude-sdk/openai'
+import { serveOllamaBridge } from '@miyago/claude-sdk/ollama'
 
-serveOpenAIAdapter({
-  port: 4141,
+serveOllamaBridge({
+  port: 11434,
   config: { defaultModel: 'claude-sonnet-4-6' },
 })
 ```
 
 ```bash
-curl http://127.0.0.1:4141/v1/chat/completions \
+# What Copilot does at startup
+curl http://127.0.0.1:11434/api/tags
+curl http://127.0.0.1:11434/api/show -d '{"model":"claude-sonnet-4-6"}'
+
+# Non-streaming chat (Phase 1; streaming + session pool land in Phase 2)
+curl http://127.0.0.1:11434/api/chat \
   -H 'content-type: application/json' \
   -d '{
     "model": "claude-sonnet-4-6",
-    "stream": true,
+    "stream": false,
     "messages": [{"role": "user", "content": "Hi"}]
   }'
 ```
 
-Stateless adapter: each request opens a fresh V2 session, runs Claude's
-built-in tool chain server-side, and streams `data: {...}` chunks in OpenAI
-SSE format. See `docs/specs/openai-cli-layers/SPEC.md` for ADRs.
+### Hooking up VS Code GitHub Copilot Chat
+
+1. Run `claude-sdk --ollama` in a terminal.
+2. In VS Code, open the Copilot Chat view → **Manage Models** → **Ollama**.
+3. The model picker should list `claude-opus-4-7`, `claude-sonnet-4-6`,
+   `claude-haiku-4-5` etc. Pick one — Copilot will route both Chat and Agent
+   mode requests through the bridge.
+
+Tool calling is advertised via `/api/show` capabilities, so models stay
+visible in Agent mode. See `docs/specs/ollama-bridge/SPEC.md` for ADRs and
+roadmap (streaming, session pool, thinking forwarding).
 
 ## CLI Harness
 
@@ -262,15 +277,15 @@ claude-sdk -p "What is 2+2?"
 claude-sdk -p --output-format json "Summarise" | jq .
 echo "Summarise" | claude-sdk -p
 
-# OpenAI HTTP adapter
-claude-sdk --serve --port 4141
+# Ollama-compatible HTTP bridge
+claude-sdk --ollama
 ```
 
 REPL slash commands: `/help`, `/exit`, `/clear`, `/model <id>`, `/cwd [path]`,
 `/compact`, `/status`. Output formats `text` (default), `json`, `stream-json`
 match the official CLI's `--output-format` semantics.
 
-claude-sdk-only additions: `--tui`, `--serve`, `--port`, `--host`,
+claude-sdk-only additions: `--tui`, `--ollama`, `--port`, `--host`,
 `--watermark`, `--cwd`.
 
 ### Bubbletea TUI (`--tui`)
@@ -313,13 +328,21 @@ import {
   diffCumulativeModelUsage,
 } from '@miyago/claude-sdk/context'
 
-// OpenAI adapter (transformers + Hono server)
+// Ollama bridge (transformers + Hono server)
 import {
-  buildPromptFromOpenAIMessages,
-  StreamingChunkConverter,
-  createOpenAIServer,
-  serveOpenAIAdapter,
-} from '@miyago/claude-sdk/openai'
+  buildPromptFromOllamaMessages,
+  buildShowResponse,
+  buildTagsResponse,
+  createOllamaServer,
+  serveOllamaBridge,
+} from '@miyago/claude-sdk/ollama'
+
+// Generic conversation history primitives (shared across protocol adapters)
+import {
+  buildPromptFromHistory,
+  extractAssistantBlocks,
+  type HistoryMessage,
+} from '@miyago/claude-sdk/shared'
 
 // CLI primitives (also accessible via `bin: claude-sdk`)
 import { runOneShot, runRepl, parseArgs } from '@miyago/claude-sdk/cli'

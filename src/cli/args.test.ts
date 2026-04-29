@@ -27,10 +27,11 @@ describe('parseArgs', () => {
     expect(parseArgs(['hello', 'world']).prompt).toBe('hello world')
   })
 
-  test('--serve overrides oneshot', () => {
-    const a = parseArgs(['--serve', '--port', '5000'])
-    expect(a.mode).toBe('serve')
+  test('--ollama overrides oneshot', () => {
+    const a = parseArgs(['--ollama', '--port', '5000'])
+    expect(a.mode).toBe('ollama')
     expect(a.port).toBe(5000)
+    expect(a.ollama).toBe(true)
   })
 
   test('-h / --help / -v / --version', () => {

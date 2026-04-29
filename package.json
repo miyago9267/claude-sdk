@@ -1,9 +1,9 @@
 {
   "name": "@miyago/claude-sdk",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "private": false,
-  "description": "Patched Claude Agent SDK — V2 persistent session, context management, OpenAI-compatible adapter, CLI harness",
+  "description": "Patched Claude Agent SDK — V2 persistent session, context management, Ollama-compatible bridge for IDE clients (GitHub Copilot Chat, etc.), CLI harness",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "bin": {
@@ -22,11 +22,17 @@
       "import": "./src/context-manager.ts",
       "default": "./src/context-manager.ts"
     },
-    "./openai": {
-      "bun": "./src/openai/index.ts",
-      "types": "./src/openai/index.ts",
-      "import": "./src/openai/index.ts",
-      "default": "./src/openai/index.ts"
+    "./shared": {
+      "bun": "./src/shared/messages.ts",
+      "types": "./src/shared/messages.ts",
+      "import": "./src/shared/messages.ts",
+      "default": "./src/shared/messages.ts"
+    },
+    "./ollama": {
+      "bun": "./src/ollama/index.ts",
+      "types": "./src/ollama/index.ts",
+      "import": "./src/ollama/index.ts",
+      "default": "./src/ollama/index.ts"
     },
     "./cli": {
       "bun": "./src/cli/index.ts",
@@ -41,7 +47,7 @@
     "patch:v2": "bash scripts/patch-v2.sh",
     "patch:cli": "bash scripts/patch.sh",
     "test": "bun test src/",
-    "serve": "bun src/cli/bin.ts --serve",
+    "ollama": "bun src/cli/bin.ts --ollama",
     "tui": "bun src/cli/bin.ts --tui",
     "build:tui": "bash scripts/build-tui.sh"
   },
@@ -56,7 +62,8 @@
     "src/index.ts",
     "src/context-manager.ts",
     "src/optimize/",
-    "src/openai/",
+    "src/shared/",
+    "src/ollama/",
     "src/cli/",
     "cmd/tui/",
     "scripts/patch-v2.mjs",
@@ -77,7 +84,9 @@
     "prompt-caching",
     "persistent-session",
     "context-management",
-    "openai-compatible",
+    "ollama",
+    "ollama-bridge",
+    "github-copilot",
     "cli"
   ]
 }

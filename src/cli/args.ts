@@ -5,14 +5,14 @@
  * (so muscle memory and Copilot-driven invocations carry over). Flags we
  * cannot back yet are accepted and reported as `unsupported` so scripts
  * fail loudly instead of silently ignoring options. Custom additions
- * (--serve / --port / --host / --watermark) live alongside.
+ * (--ollama / --port / --host / --watermark) live alongside.
  */
 
 export type OutputFormat = 'text' | 'json' | 'stream-json'
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk'
 
 export interface ParsedArgs {
-  mode: 'oneshot' | 'repl' | 'serve' | 'help' | 'version' | 'tui'
+  mode: 'oneshot' | 'repl' | 'ollama' | 'help' | 'version' | 'tui'
   prompt?: string
 
   model?: string
@@ -35,7 +35,7 @@ export interface ParsedArgs {
   cwd?: string
   watermark?: number
 
-  serve?: boolean
+  ollama?: boolean
   port?: number
   host?: string
 
@@ -46,11 +46,11 @@ export interface ParsedArgs {
 }
 
 export const HELP_TEXT = `\
-claude-sdk — patched Claude Agent SDK with OpenAI adapter
+claude-sdk — patched Claude Agent SDK with Ollama bridge
 
 Usage:
   claude-sdk [options] [prompt]
-  claude-sdk --serve [options]
+  claude-sdk --ollama [options]
   claude-sdk -p [options] [prompt]
 
 Common options (mirrors official \`claude\` CLI):
@@ -77,8 +77,9 @@ Custom (claude-sdk additions):
       --watermark <n>                  ContextManager watermark tokens (default: 150000)
       --tui                            Launch bubbletea TUI front-end
                                        (build first: bash scripts/build-tui.sh)
-      --serve                          Run OpenAI Chat Completions HTTP server
-      --port <n>                       Server port (default: 4141 or env PORT)
+      --ollama                         Run Ollama-compatible HTTP bridge for IDE clients
+                                       (e.g. GitHub Copilot Chat — Manage Models → Ollama)
+      --port <n>                       Server port (default: 11434 or env PORT)
       --host <addr>                    Server bind address (default: 127.0.0.1)
 
   -h, --help                           Show this help
@@ -90,7 +91,7 @@ Examples:
   claude-sdk -p "What is 2+2?"         # one-shot
   claude-sdk -p --output-format json "Summarise" | jq .
   echo "Summarise" | claude-sdk -p
-  claude-sdk --serve --port 4141       # OpenAI-compatible HTTP endpoint
+  claude-sdk --ollama                  # Ollama-compatible bridge on 11434
 `
 
 const FLAGS_BOOLEAN = new Set([
@@ -99,7 +100,7 @@ const FLAGS_BOOLEAN = new Set([
   '--allow-dangerously-skip-permissions',
   '--dangerously-skip-permissions',
   '--verbose',
-  '--serve',
+  '--ollama',
   '--tui',
   '-h', '--help',
   '-v', '--version',
@@ -230,8 +231,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case '--watermark':
         out.watermark = Number(takeValue())
         break
-      case '--serve':
-        out.serve = true
+      case '--ollama':
+        out.ollama = true
         break
       case '--tui':
         out.tui = true
@@ -254,7 +255,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
   if (positional.length) out.prompt = positional.join(' ')
 
-  if (out.serve) out.mode = 'serve'
+  if (out.ollama) out.mode = 'ollama'
   else if (out.tui) out.mode = 'tui'
   else if (out.print) out.mode = 'oneshot'
   else if (out.prompt !== undefined) out.mode = 'oneshot'

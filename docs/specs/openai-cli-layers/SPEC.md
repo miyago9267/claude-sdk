@@ -1,5 +1,10 @@
 # OpenAI Adapter + CLI Harness
 
+> **STATUS: SUPERSEDED (2026-04-29)** — `src/openai/` removed in favour of
+> `docs/specs/ollama-bridge/`. The CLI Harness + Bubbletea TUI portions of
+> this spec (Layer 2 / Layer 2.5) are still in effect; only the OpenAI
+> adapter (Layer 1) is gone. See ollama-bridge SPEC ADR-6 for rationale.
+
 ## What
 
 在現有 `@miyago/claude-sdk` 之上加兩層：
