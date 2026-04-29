@@ -1,7 +1,15 @@
 #!/usr/bin/env bun
 /**
- * `claude-sdk` CLI entry. Dispatches to one-shot, REPL, or HTTP server modes
- * based on argv. See `args.ts` for option list.
+ * `claude-sdk` CLI entry. Args mirror the official `claude` CLI where
+ * possible; see `src/cli/args.ts` for the full surface.
+ *
+ * Dispatch:
+ *   --help / --version          → print and exit
+ *   --serve                     → OpenAI HTTP adapter
+ *   -p / --print or stdin pipe  → one-shot
+ *   prompt arg without -p       → REPL with seeded first turn (matches
+ *                                 official behaviour)
+ *   no args + TTY               → REPL
  */
 
 import { HELP_TEXT, parseArgs } from './args.ts'
@@ -15,12 +23,41 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8').trim()
 }
 
+function printVersion(): void {
+  try {
+    const pkg = require('../../package.json') as { version?: string }
+    process.stdout.write(`claude-sdk ${pkg.version ?? '0.0.0'}\n`)
+  } catch {
+    process.stdout.write('claude-sdk (unknown version)\n')
+  }
+}
+
+function warnUnsupported(args: ReturnType<typeof parseArgs>): void {
+  if (!args.unsupported.length) return
+  process.stderr.write(
+    `claude-sdk: ignoring unsupported option(s): ${args.unsupported.join(', ')}\n`,
+  )
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
 
   if (args.mode === 'help') {
     process.stdout.write(HELP_TEXT)
     return
+  }
+
+  if (args.mode === 'version') {
+    printVersion()
+    return
+  }
+
+  warnUnsupported(args)
+
+  if (args.continue || args.resume) {
+    process.stderr.write(
+      'claude-sdk: -c / --resume not implemented yet (V2 sessions are not persisted to disk). Continuing as new session.\n',
+    )
   }
 
   if (args.mode === 'serve') {
@@ -31,7 +68,9 @@ async function main(): Promise<void> {
       config: {
         defaultModel: args.model,
         cwd: args.cwd,
-        systemPromptOverride: args.system,
+        systemPromptOverride: args.systemPrompt,
+        permissionMode: args.permissionMode,
+        allowDangerouslySkipPermissions: args.allowDangerouslySkipPermissions,
         maxTurns: args.maxTurns,
       },
     })
@@ -54,35 +93,17 @@ async function main(): Promise<void> {
       process.stderr.write('No prompt provided. See --help.\n')
       process.exit(2)
     }
-    await runOneShot({
-      prompt,
-      model: args.model,
-      system: args.system,
-      cwd: args.cwd,
-      maxTurns: args.maxTurns,
-    })
+    await runOneShot({ prompt, args })
     return
   }
 
   const piped = await readStdin()
   if (piped) {
-    await runOneShot({
-      prompt: piped,
-      model: args.model,
-      system: args.system,
-      cwd: args.cwd,
-      maxTurns: args.maxTurns,
-    })
+    await runOneShot({ prompt: piped, args })
     return
   }
 
-  await runRepl({
-    model: args.model,
-    system: args.system,
-    cwd: args.cwd,
-    maxTurns: args.maxTurns,
-    watermarkTokens: args.watermark,
-  })
+  await runRepl({ args, seedPrompt: args.prompt })
 }
 
 main().catch((err) => {

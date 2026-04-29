@@ -243,20 +243,35 @@ SSE format. See `docs/specs/openai-cli-layers/SPEC.md` for ADRs.
 
 ## CLI Harness
 
-```bash
-# One-shot
-claude-sdk "Summarise this repo"
-echo "What is 2+2?" | claude-sdk -m claude-haiku-4-5
+`claude-sdk` mirrors the official `claude` CLI args where possible — same
+flag names (`--model`, `--system-prompt`, `--add-dir`, `--allowedTools`,
+`--permission-mode`, `--output-format`, `-p / --print`, `-c / --continue`...)
+so muscle memory and existing scripts carry over. Unsupported official
+flags (`--mcp-config`, `--ide`, `--worktree`, agent subcommands etc.) are
+parsed and reported as ignored rather than silently dropped.
 
-# REPL with auto context-compact
+```bash
+# Interactive REPL (auto context-compact at watermark)
 claude-sdk
 
-# Serve OpenAI adapter
+# REPL seeded with a first prompt (matches official behaviour)
+claude-sdk "Walk me through this repo"
+
+# One-shot, official -p semantics
+claude-sdk -p "What is 2+2?"
+claude-sdk -p --output-format json "Summarise" | jq .
+echo "Summarise" | claude-sdk -p
+
+# OpenAI HTTP adapter
 claude-sdk --serve --port 4141
 ```
 
-The CLI wraps a V2 persistent session and `ContextManager` (auto-compact at
-150K tokens by default).
+REPL slash commands: `/help`, `/exit`, `/clear`, `/model <id>`, `/cwd [path]`,
+`/compact`, `/status`. Output formats `text` (default), `json`, `stream-json`
+match the official CLI's `--output-format` semantics.
+
+claude-sdk-only additions: `--serve`, `--port`, `--host`, `--watermark`,
+`--cwd`.
 
 ## Exports
 

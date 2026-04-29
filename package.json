@@ -1,6 +1,6 @@
 {
   "name": "@miyago/claude-sdk",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "type": "module",
   "private": false,
   "description": "Patched Claude Agent SDK — V2 persistent session, context management, OpenAI-compatible adapter, CLI harness",

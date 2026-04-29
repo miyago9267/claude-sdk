@@ -3,25 +3,28 @@ import { describe, expect, test } from 'bun:test'
 import { parseArgs } from './args.ts'
 
 describe('parseArgs', () => {
-  test('positional prompt -> oneshot', () => {
+  test('positional prompt -> oneshot (matches official: prompt without -p still runs)', () => {
     const a = parseArgs(['hello world'])
     expect(a.mode).toBe('oneshot')
     expect(a.prompt).toBe('hello world')
   })
 
-  test('multi-word positional joins', () => {
-    const a = parseArgs(['hello', 'world'])
-    expect(a.prompt).toBe('hello world')
-  })
-
-  test('-p / --print', () => {
+  test('-p as boolean (official: --print is a flag)', () => {
     const a = parseArgs(['-p', 'hi'])
     expect(a.mode).toBe('oneshot')
+    expect(a.print).toBe(true)
     expect(a.prompt).toBe('hi')
+  })
 
-    const b = parseArgs(['--print', 'yo'])
-    expect(b.mode).toBe('oneshot')
-    expect(b.prompt).toBe('yo')
+  test('--print + no positional + stdin pipe handled by bin', () => {
+    const a = parseArgs(['--print'])
+    expect(a.print).toBe(true)
+    expect(a.mode).toBe('oneshot')
+    expect(a.prompt).toBeUndefined()
+  })
+
+  test('multi-word positional joins', () => {
+    expect(parseArgs(['hello', 'world']).prompt).toBe('hello world')
   })
 
   test('--serve overrides oneshot', () => {
@@ -30,9 +33,11 @@ describe('parseArgs', () => {
     expect(a.port).toBe(5000)
   })
 
-  test('-h triggers help mode', () => {
+  test('-h / --help / -v / --version', () => {
     expect(parseArgs(['-h']).mode).toBe('help')
     expect(parseArgs(['--help']).mode).toBe('help')
+    expect(parseArgs(['-v']).mode).toBe('version')
+    expect(parseArgs(['--version']).mode).toBe('version')
   })
 
   test('no args -> repl', () => {
@@ -40,13 +45,68 @@ describe('parseArgs', () => {
   })
 
   test('options without prompt stay in repl', () => {
-    const a = parseArgs(['-m', 'claude-haiku-4-5'])
+    const a = parseArgs(['--model', 'sonnet'])
     expect(a.mode).toBe('repl')
-    expect(a.model).toBe('claude-haiku-4-5')
+    expect(a.model).toBe('sonnet')
   })
 
   test('unknown option throws', () => {
     expect(() => parseArgs(['--nope'])).toThrow(/Unknown option/)
+  })
+
+  test('unsupported official options collected, not thrown', () => {
+    const a = parseArgs(['--mcp-config', 'foo.json', 'go'])
+    expect(a.unsupported).toContain('--mcp-config')
+    expect(a.prompt).toBe('go')
+  })
+
+  test('--add-dir comma split', () => {
+    const a = parseArgs(['--add-dir', '/a,/b,/c'])
+    expect(a.addDir).toEqual(['/a', '/b', '/c'])
+  })
+
+  test('--add-dir repeated accumulates', () => {
+    const a = parseArgs(['--add-dir', '/a', '--add-dir', '/b'])
+    expect(a.addDir).toEqual(['/a', '/b'])
+  })
+
+  test('--allowedTools / --disallowedTools', () => {
+    const a = parseArgs(['--allowedTools', 'Bash,Edit', '--disallowed-tools', 'Write'])
+    expect(a.allowedTools).toEqual(['Bash', 'Edit'])
+    expect(a.disallowedTools).toEqual(['Write'])
+  })
+
+  test('--permission-mode', () => {
+    expect(parseArgs(['--permission-mode', 'plan']).permissionMode).toBe('plan')
+  })
+
+  test('--allow-dangerously-skip-permissions', () => {
+    expect(parseArgs(['--allow-dangerously-skip-permissions']).allowDangerouslySkipPermissions).toBe(true)
+    expect(parseArgs(['--dangerously-skip-permissions']).allowDangerouslySkipPermissions).toBe(true)
+  })
+
+  test('--setting-sources', () => {
+    expect(parseArgs(['--setting-sources', 'user,local']).settingSources).toEqual(['user', 'local'])
+  })
+
+  test('--output-format json/stream-json', () => {
+    expect(parseArgs(['-p', '--output-format', 'json', 'hi']).outputFormat).toBe('json')
+    expect(parseArgs(['-p', '--output-format', 'stream-json', 'hi']).outputFormat).toBe('stream-json')
+  })
+
+  test('-c, --continue boolean', () => {
+    expect(parseArgs(['-c']).continue).toBe(true)
+    expect(parseArgs(['--continue']).continue).toBe(true)
+  })
+
+  test('-r, --resume takes value', () => {
+    expect(parseArgs(['-r', 'sess-id']).resume).toBe('sess-id')
+  })
+
+  test('-d / --debug optional filter', () => {
+    expect(parseArgs(['-d']).debug).toBe(true)
+    expect(parseArgs(['--debug', 'api,hooks']).debug).toBe('api,hooks')
+    expect(parseArgs(['-d', 'go']).debug).toBe('go')
   })
 
   test('numeric options coerce', () => {
@@ -54,5 +114,17 @@ describe('parseArgs', () => {
     expect(a.maxTurns).toBe(7)
     expect(a.watermark).toBe(100_000)
     expect(a.prompt).toBe('go')
+  })
+
+  test('--system-prompt and --append-system-prompt', () => {
+    const a = parseArgs(['--system-prompt', 'sys', '--append-system-prompt', 'more', 'go'])
+    expect(a.systemPrompt).toBe('sys')
+    expect(a.appendSystemPrompt).toBe('more')
+  })
+
+  test('-d takes value when next is not a flag', () => {
+    const a = parseArgs(['-d', 'api', '--model', 'sonnet'])
+    expect(a.debug).toBe('api')
+    expect(a.model).toBe('sonnet')
   })
 })
