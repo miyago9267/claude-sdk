@@ -371,11 +371,34 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		m.state = stateIdle
 		m.refreshFooter()
 	case EvtStatus:
-		m.model = ev.Model
-		m.cwd = ev.Cwd
-		m.context = ev.ContextTokens
-		m.cost = ev.CostUSD
-		m.compacts = ev.Compactions
+		// Optional metadata refresh (don't overwrite with empty values).
+		if ev.Model != "" {
+			m.model = ev.Model
+		}
+		if ev.Cwd != "" {
+			m.cwd = ev.Cwd
+		}
+		if ev.ContextTokens > 0 {
+			m.context = ev.ContextTokens
+		}
+		if ev.ContextWindow > 0 {
+			m.contextMax = ev.ContextWindow
+		}
+		if ev.CostUSD > 0 {
+			m.cost = ev.CostUSD
+		}
+		if ev.Compactions > 0 {
+			m.compacts = ev.Compactions
+		}
+		// Surface any human-readable message inline in the transcript so
+		// /model, /commands, /skills, /status replies actually show up.
+		if ev.Message != "" {
+			m.flushMarkdown()
+			style := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+			for _, line := range strings.Split(ev.Message, "\n") {
+				m.appendLine(style.Render(line))
+			}
+		}
 		m.refreshHeader()
 	case EvtBusy:
 		if ev.Reason == "true" {
