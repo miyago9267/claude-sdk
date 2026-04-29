@@ -60,6 +60,12 @@ async function main(): Promise<void> {
     )
   }
 
+  if (args.mode === 'tui') {
+    const { runTui } = await import('./tui.ts')
+    await runTui({ args })
+    return
+  }
+
   if (args.mode === 'serve') {
     const { serveOpenAIAdapter } = await import('../openai/server.ts')
     const handle = serveOpenAIAdapter({

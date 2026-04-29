@@ -12,7 +12,7 @@ export type OutputFormat = 'text' | 'json' | 'stream-json'
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk'
 
 export interface ParsedArgs {
-  mode: 'oneshot' | 'repl' | 'serve' | 'help' | 'version'
+  mode: 'oneshot' | 'repl' | 'serve' | 'help' | 'version' | 'tui'
   prompt?: string
 
   model?: string
@@ -38,6 +38,8 @@ export interface ParsedArgs {
   serve?: boolean
   port?: number
   host?: string
+
+  tui?: boolean
 
   unsupported: string[]
   raw: string[]
@@ -73,6 +75,8 @@ Common options (mirrors official \`claude\` CLI):
 Custom (claude-sdk additions):
       --cwd <path>                     Working directory (default: cwd)
       --watermark <n>                  ContextManager watermark tokens (default: 150000)
+      --tui                            Launch bubbletea TUI front-end
+                                       (build first: bash scripts/build-tui.sh)
       --serve                          Run OpenAI Chat Completions HTTP server
       --port <n>                       Server port (default: 4141 or env PORT)
       --host <addr>                    Server bind address (default: 127.0.0.1)
@@ -96,6 +100,7 @@ const FLAGS_BOOLEAN = new Set([
   '--dangerously-skip-permissions',
   '--verbose',
   '--serve',
+  '--tui',
   '-h', '--help',
   '-v', '--version',
 ])
@@ -228,6 +233,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case '--serve':
         out.serve = true
         break
+      case '--tui':
+        out.tui = true
+        break
       case '--port':
         out.port = Number(takeValue())
         break
@@ -247,6 +255,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   if (positional.length) out.prompt = positional.join(' ')
 
   if (out.serve) out.mode = 'serve'
+  else if (out.tui) out.mode = 'tui'
   else if (out.print) out.mode = 'oneshot'
   else if (out.prompt !== undefined) out.mode = 'oneshot'
   else out.mode = 'repl'

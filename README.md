@@ -270,8 +270,35 @@ REPL slash commands: `/help`, `/exit`, `/clear`, `/model <id>`, `/cwd [path]`,
 `/compact`, `/status`. Output formats `text` (default), `json`, `stream-json`
 match the official CLI's `--output-format` semantics.
 
-claude-sdk-only additions: `--serve`, `--port`, `--host`, `--watermark`,
-`--cwd`.
+claude-sdk-only additions: `--tui`, `--serve`, `--port`, `--host`,
+`--watermark`, `--cwd`.
+
+### Bubbletea TUI (`--tui`)
+
+Optional full-screen TUI front-end written in Go (bubbletea + bubbles +
+lipgloss). The TS process keeps running the LLM session and streams events
+over NDJSON to a spawned Go binary that handles all rendering and input.
+
+Build the binary once (requires Go 1.24+):
+
+```bash
+bash scripts/build-tui.sh   # writes ./bin/claude-sdk-tui
+```
+
+Then:
+
+```bash
+claude-sdk --tui                   # alt-screen TUI session
+claude-sdk --tui --model sonnet    # any non-serve flag carries through
+```
+
+Header shows model / context tokens / cumulative cost / compactions; footer
+shows cwd + busy state. Key bindings: Enter to send, slash commands inline
+(`/help`, `/clear`, `/model`, `/cwd`, `/compact`, `/status`, `/exit`),
+PgUp/PgDn to scroll the transcript, Ctrl+C / Ctrl+D to exit.
+
+The Go binary is platform-specific and not shipped in the npm package; build
+it locally. See `cmd/tui/` for the IPC schema.
 
 ## Exports
 

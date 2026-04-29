@@ -1,6 +1,6 @@
 {
   "name": "@miyago/claude-sdk",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "type": "module",
   "private": false,
   "description": "Patched Claude Agent SDK — V2 persistent session, context management, OpenAI-compatible adapter, CLI harness",
@@ -41,7 +41,9 @@
     "patch:v2": "bash scripts/patch-v2.sh",
     "patch:cli": "bash scripts/patch.sh",
     "test": "bun test src/",
-    "serve": "bun src/cli/bin.ts --serve"
+    "serve": "bun src/cli/bin.ts --serve",
+    "tui": "bun src/cli/bin.ts --tui",
+    "build:tui": "bash scripts/build-tui.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.90",
@@ -56,10 +58,12 @@
     "src/optimize/",
     "src/openai/",
     "src/cli/",
+    "cmd/tui/",
     "scripts/patch-v2.mjs",
     "scripts/patch-v2.sh",
     "scripts/patch.sh",
-    "scripts/postinstall.sh"
+    "scripts/postinstall.sh",
+    "scripts/build-tui.sh"
   ],
   "repository": {
     "type": "git",

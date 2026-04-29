@@ -44,6 +44,19 @@
 - V2 session 才能享受 cache 紅利（CLI 互動是長對話場景）。
 - ContextManager 自動處理 watermark / keepalive。
 
+### ADR-4: TUI 走 Go bubbletea + NDJSON IPC
+
+**Decision**: `--tui` 模式下 spawn `bin/claude-sdk-tui`（Go 寫的 bubbletea 應用），透過 stdin/stdout NDJSON 雙向溝通。TS 端只跑 LLM session，Go 端只負責 render 和 input。
+
+**Rationale**:
+- Bubbletea / lipgloss 是目前 TUI 生態最成熟的方案，TS 沒有同等替代品（ink 的 React-based 重度且渲染弱）。
+- 跨 process 邊界乾淨，Go binary 升級不動 TS 版本，反之亦然。
+- TS 仍持有所有 LLM / patched SDK / ContextManager 邏輯，TUI 只是 view 層。
+
+**Trade-off**:
+- 需要 Go 工具鏈才能 build TUI binary。MVP 不在 npm 包出 binary，user 自己跑 `bash scripts/build-tui.sh`。
+- IPC 協定需要在兩邊手動同步（schema 在 `cmd/tui/ipc.go` + `src/cli/tui.ts`）。
+
 ## Alternatives
 
 | 方案 | 為何不採用 |

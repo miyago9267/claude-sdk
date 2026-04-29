@@ -5,3 +5,6 @@ docs/ai/
 
 # AI workspace (not versioned)
 .ai/
+
+# TUI binary build output (built per-host via scripts/build-tui.sh)
+bin/
