@@ -77,16 +77,17 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   let sessionId: string | null = null
   let busy = false
 
-  // stdin/stdout/stderr stay on the real TTY so bubbletea sees raw key events.
-  // FD 3 carries HostEvents from us into the binary; FD 4 carries UIEvents back.
+  // The Go binary opens /dev/tty itself for input/render, so stdin/stdout are
+  // free to act as full-duplex IPC channels. stderr stays on the real TTY for
+  // any diagnostic messages bubbletea or runtime panics may print.
   const child = spawn(binary, [], {
-    stdio: ['inherit', 'inherit', 'inherit', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'inherit'],
   })
 
-  const hostOut = (child.stdio[3] ?? null) as Writable | null
-  const uiIn = (child.stdio[4] ?? null) as Readable | null
+  const hostOut = child.stdin as Writable | null
+  const uiIn = child.stdout as Readable | null
   if (!hostOut || !uiIn) {
-    process.stderr.write('claude-sdk: failed to open IPC fds 3/4 to TUI binary\n')
+    process.stderr.write('claude-sdk: failed to open IPC pipes to TUI binary\n')
     child.kill()
     return
   }

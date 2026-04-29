@@ -17,29 +17,34 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// IPC fd layout (set up by the TS host):
-//   fd 0/1/2 : real TTY (so bubbletea sees raw key events)
-//   fd 3     : NDJSON HostEvent stream (TS -> us)
-//   fd 4     : NDJSON UIEvent stream  (us -> TS)
-const (
-	fdHostIn = 3
-	fdUIOut  = 4
-)
-
+// IPC layout (set up by the TS host):
+//   stdin (fd 0)  : NDJSON HostEvent stream  (TS -> us)
+//   stdout (fd 1) : NDJSON UIEvent stream    (us -> TS)
+//   stderr (fd 2) : human-readable diagnostics, inherited TTY
+//
+// bubbletea reads keys and paints to /dev/tty directly — never via stdin/
+// stdout — so the IPC channels stay clean.
 func main() {
-	hostIn := os.NewFile(fdHostIn, "host-events")
-	uiOut := os.NewFile(fdUIOut, "ui-events")
-	if hostIn == nil || uiOut == nil || !fdLive(hostIn) || !fdLive(uiOut) {
-		fmt.Fprintln(os.Stderr, "claude-sdk-tui: this binary expects IPC fds 3 and 4.")
-		fmt.Fprintln(os.Stderr, "Run it through the TS host instead:")
-		fmt.Fprintln(os.Stderr, "    claude-sdk --tui")
-		fmt.Fprintln(os.Stderr, "or programmatically via src/cli/tui.ts.")
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "claude-sdk-tui: cannot open /dev/tty:", err)
+		fmt.Fprintln(os.Stderr, "This binary must run attached to a terminal. Try `claude-sdk --tui`.")
+		os.Exit(2)
+	}
+	if !fdLive(os.Stdin) || !fdLive(os.Stdout) {
+		fmt.Fprintln(os.Stderr, "claude-sdk-tui: stdin/stdout aren't IPC pipes.")
+		fmt.Fprintln(os.Stderr, "Run via `claude-sdk --tui`, not directly.")
 		os.Exit(2)
 	}
 
-	model := newModel(uiOut)
-	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseAllMotion())
-	go pumpHostEvents(prog, hostIn)
+	model := newModel(os.Stdout)
+	prog := tea.NewProgram(
+		model,
+		tea.WithAltScreen(),
+		tea.WithInput(tty),
+		tea.WithOutput(tty),
+	)
+	go pumpHostEvents(prog, os.Stdin)
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui:", err)
 		os.Exit(1)
