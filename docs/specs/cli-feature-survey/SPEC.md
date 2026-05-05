@@ -1,0 +1,276 @@
+# CLI Feature Survey & Adoption Plan
+
+## What
+
+逆向官方 `claude` (Claude Code) CLI 的功能表面，盤點 `@miyago/claude-sdk` 已涵蓋 / 該抄 / 該改 / 該略的項目，產出實作優先級供後續 sprint 取用。
+
+**This is a research spec — not an implementation spec.** TASKS 階段才挑優先項目落實。
+
+## Why
+
+目前 `claude-sdk --tui` 和 `claude` 都長得像 Claude Code，但 user-visible UX (slash commands、pickers、`/init`、`/cost`、hooks 等) 我們只攔了一小撮，剩下都是 forward 給 SDK 內 cli.js 處理。要決定哪些「自家做」、哪些「靠 forward」，避免重做或漏做。
+
+---
+
+## Section 1 — Survey
+
+### 1.1 CLI 旗標 (`claude --help` 全列表)
+
+| 旗標 | 我方狀態 | 備註 |
+|---|---|---|
+| `-p, --print` | ✅ 已對齊 | boolean，positional 為 prompt |
+| `--model` | ✅ 已對齊 + normalize | resolveModel 修常見 typo |
+| `--system-prompt` / `--append-system-prompt` | ✅ 已對齊 |  |
+| `--add-dir` | ✅ 已對齊 | comma-split |
+| `--allowedTools` / `--disallowedTools` | ✅ 已對齊 |  |
+| `--permission-mode` | ✅ 已對齊 |  |
+| `--allow-dangerously-skip-permissions` | ✅ 已對齊 |  |
+| `--max-turns` | ✅ 已對齊 |  |
+| `--setting-sources` | ✅ 已對齊 |  |
+| `--output-format` | ✅ 已對齊 | text / json / stream-json |
+| `-c, --continue` / `-r, --resume` | ✅ Phase A+B done | local + official jsonl 雙向 |
+| `-d, --debug` | ⚠️ 解析但沒接通 cli.js | forward 給 SDK 即可，無實作 |
+| `--verbose` | ⚠️ 解析但沒接通 |  |
+| `-v, --version` | ✅ |  |
+| `--mcp-config` | ❌ unsupported | SDK 已支援，需把 args wire 到 sessionOptions.mcpServers |
+| `--ide` | ❌ unsupported | IDE 整合，VS Code extension 那條路，工作量大 |
+| `--worktree`, `-w` | ❌ unsupported | git worktree 管理 |
+| `--plugin-dir` | ❌ unsupported | 應 wire 到 sessionOptions |
+| `--tools` | ❌ unsupported | 跟 --allowed/--disallowed 重疊 |
+| `--agent` / `--agents` | ❌ unsupported | sub-agent 設定 |
+| `--effort` | ❌ unsupported | thinking budget level |
+| `--betas` | ❌ unsupported | beta API headers |
+| `--bare` / `--brief` | ❌ unsupported | minimal mode |
+| `--from-pr` | ❌ unsupported | resume by PR number |
+| `--json-schema` | ❌ unsupported | structured output |
+| `--max-budget-usd` | ❌ unsupported | hard budget |
+| `--no-session-persistence` | ❌ unsupported | with our store, mostly meaningless |
+| `--session-id` | ❌ unsupported | force specific UUID — 配合官方 schema 後可實作 |
+| `--settings` | ❌ unsupported | extra settings.json |
+| `--input-format` | ❌ unsupported | stream-json input |
+| `--include-hook-events` | ❌ unsupported | hook events in output |
+| `--include-partial-messages` | ⚠️ 我們預設都打開了 |  |
+| `--exclude-dynamic-system-prompt-sections` | ❌ unsupported |  |
+| `--disable-slash-commands` | ❌ unsupported |  |
+| `--fork-session` / `--fallback-model` | ❌ unsupported |  |
+
+子命令 (subcommands)：
+
+| 子命令 | 我方狀態 | 備註 |
+|---|---|---|
+| `agents` | ❌ | manage background / configured agents |
+| `auth` | ❌ | manage authentication |
+| `auto-mode` | ❌ | inspect auto mode classifier |
+| `doctor` | ❌ | health check + auto-updater |
+| `install` | ❌ | install native build |
+| `mcp` | ❌ | configure / manage MCP servers |
+| `plugin` / `plugins` | ❌ | manage plugins |
+| `setup-token` | ❌ | long-lived auth token |
+| `ultrareview` | ❌ | cloud multi-agent code review |
+| `update` / `upgrade` | ❌ | self-update |
+
+### 1.2 Slash Commands (`/...`)
+
+從 cli.js 字串 grep + 我們已知的官方文件分類。** 標記 = 我們已自家實作；▷ 標記 = 我們 forward 給 SDK；○ = 不知道是否官方還是 plugin。
+
+#### 對話控制
+| Slash | 狀態 | 備註 |
+|---|---|---|
+| `/help` | ** TUI/REPL 自家 | 列出 TS-side 命令 |
+| `/clear` | ** | 重啟 V2 session |
+| `/exit` `/quit` | ** |  |
+| `/compact` | ** | 強制 ContextManager compact |
+| `/status` | ** | session id, ctx, cost |
+| `/model` | ** | normalize + 切換 |
+| `/cwd` | ** 自家擴充 | 官方無此命令 |
+| `/self` | ** 自家擴充 | toggle self-edit |
+| `/commands` `/skills` | ** 自家擴充 | 列已安裝 |
+
+#### 官方有但我們沒做（值得抄）
+| Slash | 推測功能 | 優先級 |
+|---|---|---|
+| `/cost` | 顯示 cost breakdown by model | **HIGH** |
+| `/init` | 產生 / 更新 CLAUDE.md | **HIGH** |
+| `/agents` | browse + invoke sub-agents | MED |
+| `/hooks` | 顯示 / 編輯 hooks 設定 | MED |
+| `/memory` | 管理 ~/.claude/CLAUDE.md / memories/ | MED |
+| `/resume` | 互動式 picker 列 sessions | **HIGH** |
+| `/feedback` | 送 bug report 到 anthropic | LOW |
+| `/release-notes` | show changelog | LOW |
+| `/upgrade` | self-update | LOW |
+| `/permissions` | 查看 / 修改 permission rules | MED |
+| `/branch` | git branch operations | LOW |
+| `/effort` | 切 thinking budget (low/med/high/max) | MED |
+| `/fast` | 切 fast mode (Opus 4.6) | LOW |
+| `/ide` | connect to IDE | SKIP |
+| `/install-github-app` | GitHub bot setup | SKIP |
+| `/mcp` | manage MCP servers | LOW |
+
+#### Plugin / Skill 帶來的
+- `/sentry-feature-setup`、`/skill-name`、`/init-ai-dir` 等 — 透過 `/skills` discovery 我們已能看到，invoke 走 forward。不需自家實作。
+
+### 1.3 Session JSONL Record Types (我們未來可能要寫 / 讀)
+
+從 `~/.claude/projects/-Users-miyago-Project-AI-claude-sdk/<id>.jsonl` 觀測到 25 種 type：
+
+| type | 我們狀態 | 處理方向 |
+|---|---|---|
+| `permission-mode` | ✅ 寫入 | header line |
+| `user` / `assistant` | ✅ 雙向 | 但 content 是 string，未保留 block array |
+| `text` / `thinking` | ❌ 未保留 | 出現在 message.content 內 |
+| `tool_use` / `tool_result` | ⚠️ 攤平成 text | **應保留 block array**（之前 phase B 的 TODO） |
+| `system` | ❌ | system reminder injections |
+| `attachment` | ❌ | image/file paste |
+| `hook_success` | ❌ | hook 跑完的 record |
+| `task_reminder` | ❌ | TodoWrite 提醒 |
+| `skill_listing` | ❌ | skill discovery 結果 |
+| `mcp_instructions_delta` | ❌ | MCP server messages |
+| `file-history-snapshot` | ❌ | 檔案備份，可 /undo |
+| `edited_text_file` | ❌ | Edit/Write 操作 record |
+| `last-prompt` | ❌ | 重發上一個 prompt 用 |
+| `previous_message_not_found` | ❌ | 錯誤 marker |
+| `unavailable` | ❌ | tool unavailable |
+| `update` | ❌ | sdk update notice |
+| `date_change` | ❌ | system reminder：日期變更 |
+| `direct` | ❌ |  |
+| `deferred_tools_delta` | ❌ | deferred tool execution |
+| `create` | ❌ |  |
+| `message` / `agents` | ❌ |  |
+
+### 1.4 `~/.claude/` 子目錄盤點
+
+| 目錄 | 用途 | 我們是否該知道 |
+|---|---|---|
+| `projects/` | session jsonl 集中地 | ✅ Phase B 已寫入/讀取 |
+| `commands/` | user-level slash commands | ✅ discoverCommands |
+| `skills/` | user-level skills | ✅ discoverSkills |
+| `agents/` | user-defined agents | ❌ 未 discover |
+| `plugins/` | installed plugins | ✅ discoverCommands 走 plugins |
+| `memories/` | 個人 memory bank（feedback/profile） | ❌ |
+| `memory/` | model-managed memory | ❌ |
+| `hooks/` | shell scripts triggered by hook events | ❌ |
+| `file-history/` | 檔案備份 | ❌ |
+| `handoffs/` | session handoff markdown | ❌（我們 .ai/ 自有） |
+| `session-env/` | 每 session env vars | ❌ |
+| `mcp-needs-auth-cache.json` | MCP OAuth state | ❌ |
+| `paste-cache/` | 貼上的圖片/檔案 | ❌ |
+| `exports/` | session export | ❌ |
+| `downloads/` | tool 下載檔 | ❌ |
+| `backups/` | settings 備份 | ❌ |
+| `cache/` | sdk cache | ❌ |
+| `debug/` | debug log | ❌ |
+| `ide/` | IDE bridge state | ❌ |
+| `scripts/` | user automation scripts | ❌ |
+| `rules/` | user-defined rule files | ❌ |
+| `history.jsonl` | 全域 prompt history（Up arrow recall） | ❌ |
+| `CLAUDE.md` | 全域 system prompt | ✅ 透過 settingSources 已載入 |
+| `RTK.md` | 個人 rule pack | ✅ 透過 @-import |
+| `settings.json` (推測) | 全域設定 | ❌ |
+
+### 1.5 Hook Events
+
+cli.js 內建 9 種 hook events：
+
+```
+PreToolUse, PostToolUse, Stop, SubagentStop,
+SessionStart, SessionEnd, UserPromptSubmit,
+PreCompact, Notification
+```
+
+cli.js 跑時自動處理 user `~/.claude/hooks/*.sh` 跟 settings.json 中的 hook 設定。**我們透過 V2 session 已自動繼承這個能力**，不用自家實作。但 hook 觸發的記錄 (`hook_success` jsonl record) 我們目前 ignore，TUI 可以顯示「[hook] X fired」之類。
+
+### 1.6 內建 Tools
+
+Bash / Read / Write / Edit / Glob / Grep / Agent / WebSearch / WebFetch / Task (TodoWrite) / NotebookEdit / Skill (run sub-skill) / etc — 全在 cli.js 內，V2 session 自帶，我們無須重做。
+
+---
+
+## Section 2 — Recommendations
+
+### HIGH (下一波就抄)
+
+1. **`/cost`** — show cost breakdown by model + cumulative。  
+   *Why*：user 已有此心智模型，statusLine2 已顯示 cost 但無 detail。
+2. **`/resume` interactive picker** — TUI popup 列出 local + official sessions，含 model / lastUsed / turnCount，方向鍵選 + Enter resume。  
+   *Why*：phase A/B 做完後，pickup 入口缺。
+3. **`/init`** — 產 CLAUDE.md。  
+   *Why*：新專案啟動 ergonomic，user 已習慣。
+4. **Tool block round-trip in jsonl mirror** — phase B TODO，保留 `tool_use` / `tool_result` block arrays 而非攤成 text。  
+   *Why*：official `claude -r` 拿不到 tool 過程。
+
+### MED (再下一波)
+
+5. **`/agents` browser** — 列 ~/.claude/agents/ + 專案內 .claude/agents/，可 invoke。  
+   *Why*：sub-agent 是官方主推工作流。
+6. **`/memory`** — 列 / 編輯 ~/.claude/memories/ 跟 ~/.claude/CLAUDE.md。
+7. **`/permissions`** — 顯示 / 修改 permission rules。
+8. **`/effort`** — 切 thinking budget。透過 sessionOptions.thinkingConfig，已 patch。
+9. **`/hooks`** — 顯示 hooks 設定，TUI 內 trace hook 觸發 (`hook_success` jsonl record)。
+10. **`--mcp-config` / `--plugin-dir` wire-through** — 我們 args 已 parse 但忽略，把它接到 sessionOptions。
+11. **TUI `bug:` resume status** — alt-screen 吞掉 stderr 的 resume 訊息（handoff pending）。
+12. **Dirty marker reactivity** — turn 結束後重 sample git status（handoff pending）。
+13. **`history.jsonl` integration** — REPL/TUI Up arrow recall 上次 prompt。
+
+### LOW (有空再做)
+
+14. `/feedback`、`/release-notes`、`/upgrade`、`/branch`、`/fast`
+15. `--from-pr`：resume from GitHub PR
+16. `--bare` / `--brief`：minimal mode
+17. `--json-schema`：structured output
+18. session export (`exports/`)、file-history (`/undo`)、attachment 處理
+19. `subcommands`：`doctor`、`auth`、`mcp`、`plugin` 子命令
+
+### SKIP (不做或交給官方)
+
+- `/ide` / `--ide`：IDE bridge — 這是 VS Code extension 的活
+- `/install-github-app`：GitHub bot 設定，跟我們無關
+- `auto-mode` 子命令：classifier 內部
+- `setup-token`：auth flow 我們不碰
+- 內建 tools：cli.js 自帶
+- Hook 機制本身：cli.js 自帶（只考慮 surface 顯示）
+- Permission UI：我們預設 bypassPermissions，不重做 prompt UI
+
+---
+
+## ADR
+
+### ADR-1: 不重做 hook 機制本身，但 surface hook 觸發
+
+**Decision**：cli.js 已內建 9 種 hook events 並會跑 user 的 `~/.claude/hooks/*.sh`。我們不重做，但 TUI 解析 jsonl 的 `hook_success` 等 record，dim 顯示「[hook] X fired」，讓 user 看見。
+
+### ADR-2: Tool block 雙向轉換優先於其他 phase B 細節
+
+**Decision**：phase B 寫官方 jsonl 時 tool blocks 攤平 — 這是已知缺陷。**HIGH-4 優先**完成這個，否則 official `claude -r` 看不到 tool 過程，互通性打折。
+
+### ADR-3: `/init` 沿用 SDK 內建邏輯
+
+**Decision**：cli.js 自有 `/init` slash command。我們不自家寫產 CLAUDE.md 的邏輯，**直接 forward**。但 TUI 可加 confirmation banner。我們的「自家實作 / forward」策略：純 UI 優化（picker、format）就抄，模型驅動的內容生成就 forward。
+
+### ADR-4: `/cost` 不依賴 jsonl 解析，從現有 ContextManager state + cumulative cost 算
+
+**Decision**：`/cost` 顯示我們已 track 的 turn-by-turn cost、by-model breakdown，不去讀官方 jsonl 統計（避免雙來源不一致）。要更精準的 quota 才去讀 official。
+
+---
+
+## Out of Scope
+
+- 重做 cli.js 任何核心功能（permission system、tool dispatcher、hook engine）
+- IDE 整合（VS Code extension）
+- Native build / installer / self-update
+- Auth flow / MCP OAuth
+- Multi-tenant / team 功能
+
+---
+
+## Open Questions
+
+1. `/effort` 切 thinking budget — V2 session 是否支援動態切？還是要 restart session？
+2. cli.js 自身的 `/init` 內容是否會寫進我們 mirror 的官方 jsonl？需要驗證。
+3. `history.jsonl` 是否有 schema doc，還是要 reverse engineer？
+4. 我們「自家 slash」（`/cwd` `/self` `/commands` `/skills`）跟官方無衝突，但官方未來可能加同名命令 — 要不要前綴 `:claude-sdk:`？
+
+---
+
+## Next
+
+待 user 從 Recommendations 圈出第一批 (預設 HIGH 4 個)，建 TASKS.md 進實作。
