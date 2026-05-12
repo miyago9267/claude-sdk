@@ -144,6 +144,10 @@ type model struct {
 	// Active tasks (sub-agent workflows) — same idea as toolByID.
 	taskByID map[string]*taskEntry
 
+	// Animation state
+	welcomeFrame    int       // 0..2 during fade-in, then 3 = settled
+	inputFlashUntil time.Time // input box border tinted green until this moment
+
 	vp    viewport.Model
 	input textarea.Model
 	spin  spinner.Model
@@ -209,13 +213,44 @@ func newModel(uiOut io.Writer) *model {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spin.Tick, tickEverySecond())
+	return tea.Batch(textarea.Blink, m.spin.Tick, tickEverySecond(), welcomeFrameTick())
 }
 
 type secondTickMsg struct{}
 
 func tickEverySecond() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return secondTickMsg{} })
+}
+
+// welcomeFrameTick steps the splash logo through its three colour frames
+// during cold-start. Stops once welcomeFrame >= 3.
+type welcomeTickMsg struct{}
+
+func welcomeFrameTick() tea.Cmd {
+	return tea.Tick(220*time.Millisecond, func(t time.Time) tea.Msg { return welcomeTickMsg{} })
+}
+
+// hookFlashFadeMsg arrives ~400ms after a hook line was appended; we mutate
+// the row from its bright background to its calm style.
+type hookFlashFadeMsg struct {
+	idx    int
+	normal string
+}
+
+func scheduleHookFlashFade(idx int, normal string) tea.Cmd {
+	return tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg {
+		return hookFlashFadeMsg{idx: idx, normal: normal}
+	})
+}
+
+// inputFlashFadeMsg triggers a re-render once the green send-confirmation
+// border should expire.
+type inputFlashFadeMsg struct{}
+
+func scheduleInputFlashFade() tea.Cmd {
+	return tea.Tick(220*time.Millisecond, func(t time.Time) tea.Msg {
+		return inputFlashFadeMsg{}
+	})
 }
 
 // ----------------------------------------------------------------------------
@@ -241,6 +276,28 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshFooter()
 		m.refreshActiveTools()
 		return m, tickEverySecond()
+
+	case welcomeTickMsg:
+		if m.welcomeFrame < 3 {
+			m.welcomeFrame++
+			m.refreshViewport()
+			if m.welcomeFrame < 3 {
+				return m, welcomeFrameTick()
+			}
+		}
+		return m, nil
+
+	case hookFlashFadeMsg:
+		if msg.idx >= 0 && msg.idx < len(m.transcript) {
+			m.transcript[msg.idx] = msg.normal
+			m.refreshViewport()
+		}
+		return m, nil
+
+	case inputFlashFadeMsg:
+		// noop: View rebuilds the input box and the colour falls back
+		// because inputFlashUntil is now in the past.
+		return m, nil
 
 	case hostMsg:
 		return m.applyHostEvent(msg.ev)
@@ -283,6 +340,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.input.Reset()
+			m.inputFlashUntil = time.Now().Add(220 * time.Millisecond)
 			if strings.HasPrefix(text, "/") {
 				if text == "/exit" || text == "/quit" {
 					m.out.send(UIEvent{Type: UIExit})
@@ -290,14 +348,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("69")).Render(text))
 				m.out.send(UIEvent{Type: UISlash, Cmd: text})
-				return m, nil
+				return m, scheduleInputFlashFade()
 			}
 			m.appendLine(renderUserPrompt(text))
 			m.appendLine("")
 			m.state = stateBusy
 			m.refreshFooter()
 			m.out.send(UIEvent{Type: UIPrompt, Text: text})
-			return m, nil
+			return m, scheduleInputFlashFade()
 		case tea.KeyCtrlJ:
 			// Pass through to textarea so it inserts a newline.
 			var cmd tea.Cmd
@@ -461,7 +519,10 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		}
 	case EvtHook:
 		m.flushMarkdown()
-		m.appendLine(renderHook(ev.HookEvent, ev.HookName, ev.HookStatus, ev.DurationMs))
+		normal := renderHook(ev.HookEvent, ev.HookName, ev.HookStatus, ev.DurationMs)
+		bright := renderHookFlashed(ev.HookEvent, ev.HookName, ev.HookStatus, ev.DurationMs)
+		m.appendLine(bright)
+		return m, scheduleHookFlashFade(len(m.transcript)-1, normal)
 	case EvtTask:
 		m.flushMarkdown()
 		switch ev.TaskStatus {
@@ -640,9 +701,13 @@ func (m *model) View() string {
 }
 
 func (m *model) inputBox() string {
+	borderColor := lipgloss.Color("63") // calm purple
+	if !m.inputFlashUntil.IsZero() && time.Now().Before(m.inputFlashUntil) {
+		borderColor = lipgloss.Color("78") // bright green flash on send
+	}
 	border := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("63")).
+		BorderForeground(borderColor).
 		Padding(0, 1).
 		Width(m.w - 2)
 	return border.Render(m.input.View())
@@ -1127,6 +1192,18 @@ func renderSkillCall(name, status string, elapsed int) string {
 	return joinWithElapsed(fmt.Sprintf("%s %s %s", dot, badge, nameStyled), status, elapsed)
 }
 
+// renderHookFlashed adds a leading 'NEW' badge that fades after a few
+// hundred ms, drawing the eye to the latest hook fired.
+func renderHookFlashed(event, name, status string, durationMs int) string {
+	badge := lipgloss.NewStyle().
+		Background(lipgloss.Color("228")).
+		Foreground(lipgloss.Color("16")).
+		Bold(true).
+		Padding(0, 1).
+		Render("NEW")
+	return badge + " " + renderHook(event, name, status, durationMs)
+}
+
 func renderHook(event, name, status string, durationMs int) string {
 	gear := lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("⚙")
 	eventStyled := lipgloss.NewStyle().
@@ -1294,7 +1371,19 @@ var welcomeLogo = `
 `
 
 func (m *model) renderWelcome() string {
-	logoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("63"))
+	// Fade-in palette: dim → mid → bright → settled. welcomeFrame steps via
+	// the welcomeTick command issued from Init().
+	logoColors := []lipgloss.Color{
+		lipgloss.Color("240"), // dim grey
+		lipgloss.Color("60"),  // mid purple
+		lipgloss.Color("99"),  // bright magenta
+		lipgloss.Color("63"),  // settled
+	}
+	frame := m.welcomeFrame
+	if frame > len(logoColors)-1 {
+		frame = len(logoColors) - 1
+	}
+	logoStyle := lipgloss.NewStyle().Foreground(logoColors[frame])
 	tipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("105")).Bold(true)
 

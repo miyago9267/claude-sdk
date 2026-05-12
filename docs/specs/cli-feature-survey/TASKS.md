@@ -36,9 +36,9 @@
 ### C.4 Animation polish
 
 - [x] Tool elapsed overlay (1s tick auto-refresh)
-- [ ] Welcome logo 3-frame fade-in（lipgloss color cycle） — 留下個 commit
-- [ ] Hook fired flash：appendLine 用 bright bg 200ms 後 refresh — 留下個 commit
-- [ ] User send flash：input box border 短暫變綠 — 留下個 commit
+- [x] Welcome logo 3-frame fade-in (240 → 60 → 99 → 63 via welcomeTickMsg)
+- [x] Hook fired flash: 'NEW' badge prefix, scheduled fade after 400ms
+- [x] User send flash: input box border tints green for 220ms after Enter
 
 ### C.5 Verification
 
