@@ -27,3 +27,15 @@
 
 - [x] `bun test src/` 194 pass
 - [x] `bash scripts/build-tui.sh` 通過
+
+## Phase F — MED action items (one batch)
+
+- [x] F.1 forward `skill_listing` system event → 'Loaded N skills from <path>' status
+- [x] F.2 discoverSkills 多讀 frontmatter `model` + `effort`，formatList 顯示 `<m:… · e:…>` chip
+- [x] F.3 stringifyToolContent 處理 `image` block → `[image: <media_type>]`，其他未知 type → `[<type>]`
+- [x] F.4 (no-op) tool_progress render — Phase C 的 1s tick 已涵蓋；learning doc 提的 dim stdout 屬 hook_progress
+- [x] F.5 forwardToolUse 跳過 `Agent` / `Task` — SDKTaskStartedMessage 已 paint `▸ task` 行，避免雙顯
+- [x] F.6 `/hooks` slash command — `src/cli/hooks-config.ts` 讀兩處 settings.json + flatten grouped 格式 + formatHooks
+- [x] F.7 turn 結束時 surface `permission_denials[]` 為 `Permission denials this turn:` block
+
+199 tests pass (5 new for hooks-config). Binary rebuilt.

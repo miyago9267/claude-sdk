@@ -29,6 +29,7 @@ import { ContextManager } from '../context-manager.ts'
 import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
 import { discoverCommands, discoverSkills, discoverAgents, formatList } from './discover.ts'
+import { discoverHooks, formatHooks } from './hooks-config.ts'
 import { safeCloseSession } from './safe-close.ts'
 import { resolveModel, formatKnownModels, KNOWN_MODELS } from './models.ts'
 import { readGitBranch, readGitDirty } from './git-info.ts'
@@ -138,6 +139,7 @@ const TS_BUILTIN_COMMANDS: BuiltinCmd[] = [
   { name: '/commands', source: 'built-in', description: 'list installed slash commands' },
   { name: '/skills', source: 'built-in', description: 'list installed skills' },
   { name: '/sessions', source: 'built-in', description: 'pick a session to resume (local + official)' },
+  { name: '/hooks', source: 'built-in', description: 'list configured hooks from settings.json (project + user)' },
   { name: '/agents', source: 'built-in', description: 'pick an agent to inspect or invoke' },
   {
     name: '/pm',
@@ -494,6 +496,16 @@ export async function runTui(opts: TuiOptions): Promise<void> {
               hookStatus: status,
               durationMs: duration,
             })
+          } else if (sub === 'skill_listing') {
+            const m2 = msg as unknown as { skillCount?: number; displayPath?: string; isInitial?: boolean }
+            if (m2.isInitial) continue
+            const n = m2.skillCount ?? 0
+            if (n > 0) {
+              sendToTui({
+                type: 'status',
+                message: `Loaded ${n} skill${n === 1 ? '' : 's'} from ${m2.displayPath ?? ''}`,
+              })
+            }
           } else if (sub === 'task_started') {
             const m2 = msg as unknown as { task_id?: string; description?: string }
             sendToTui({
@@ -619,6 +631,18 @@ export async function runTui(opts: TuiOptions): Promise<void> {
             usageBudgetUSD,
             usageSpentUSD: usageWindowCost,
           })
+          // Surface permission_denials so the user sees why a tool didn't
+          // run when permissionMode != bypassPermissions.
+          const denials = (r as { permission_denials?: Array<{
+            tool_name: string; tool_input: Record<string, unknown>
+          }> }).permission_denials
+          if (Array.isArray(denials) && denials.length > 0) {
+            const lines = ['Permission denials this turn:']
+            for (const d of denials) {
+              lines.push(`  ✗ ${d.tool_name}(${summariseToolInput(d.tool_name, d.tool_input)})`)
+            }
+            sendToTui({ type: 'status', message: lines.join('\n') })
+          }
           await manager.checkWatermark()
           break
         }
@@ -707,6 +731,12 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           return
         }
         sendToTui({ type: 'status', message: `you answered: ${answer.value ?? '(empty)'}` })
+        return
+      }
+
+      case '/hooks': {
+        const cfg = discoverHooks({ cwd: sessionOptions.cwd ?? process.cwd() })
+        sendToTui({ type: 'status', message: formatHooks(cfg) })
         return
       }
 
@@ -963,6 +993,10 @@ export function parseMcpToolName(name: string): { server: string; tool: string }
 
 /**
  * Route a tool_use to the right HostEvent type based on its name:
+ *   - 'Agent' / 'Task'  → skipped; SDKTaskStartedMessage already paints
+ *                         the '▸ task' row, so emitting tool-use too would
+ *                         double up (see docs/learning/cli-internals-tool-
+ *                         dispatch.md §5).
  *   - 'Skill'           → skill-call (skill name from input.skill)
  *   - 'mcp__a__b'       → mcp-call (server=a, tool=b)
  *   - everything else   → tool-use (built-in tools)
@@ -973,6 +1007,11 @@ function forwardToolUse(
   input: unknown,
   send: (ev: HostEvent) => void,
 ): void {
+  if (name === 'Agent' || name === 'Task') {
+    // SDK system events (SDKTaskStarted/Progress/Notification) drive the
+    // task row; nothing to do here.
+    return
+  }
   if (name === 'Skill') {
     const skill = input && typeof input === 'object' && 'skill' in (input as Record<string, unknown>)
       ? String((input as Record<string, unknown>).skill ?? '')
@@ -1065,6 +1104,15 @@ function stringifyToolContent(content: unknown): string {
         if (b && typeof b === 'object') {
           const obj = b as Record<string, unknown>
           if (typeof obj.text === 'string') return obj.text
+          // Image / non-text blocks: surface a placeholder so the ⎿ line
+          // isn't blank (e.g. a Read on a screenshot).
+          if (obj.type === 'image') {
+            const src = obj.source as { media_type?: string } | undefined
+            return `[image: ${src?.media_type ?? 'unknown'}]`
+          }
+          if (typeof obj.type === 'string') {
+            return `[${obj.type}]`
+          }
         }
         return ''
       })

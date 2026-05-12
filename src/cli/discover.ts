@@ -20,6 +20,8 @@ export interface SkillEntry {
   source: 'project' | 'user' | 'plugin'
   path: string
   description?: string
+  model?: string  // per-skill model override (frontmatter 'model')
+  effort?: string // thinking budget (frontmatter 'effort')
 }
 
 export interface AgentEntry {
@@ -126,11 +128,14 @@ function scanSkillsDir(dir: string, source: SkillEntry['source'], out: SkillEntr
     } catch {
       continue
     }
+    const fm = readFrontmatter(skillFile)
     out.push({
       name,
       source,
       path: skillFile,
-      description: readFrontmatterDescription(skillFile),
+      description: fm.description,
+      model: fm.model,
+      effort: fm.effort,
     })
   }
 }
@@ -160,19 +165,32 @@ function scanPluginsSkillDirs(pluginsRoot: string, out: SkillEntry[]): void {
 }
 
 function readFrontmatterDescription(path: string): string | undefined {
+  return readFrontmatter(path).description
+}
+
+// Pulls the recognised skill frontmatter fields from a SKILL.md.
+// Matches the keys cli.js's Gt1 honours; see
+// docs/learning/cli-internals-skill-invocation.md §1.
+function readFrontmatter(path: string): { description?: string; model?: string; effort?: string } {
   let content: string
   try {
     content = readFileSync(path, 'utf8')
   } catch {
-    return undefined
+    return {}
   }
-  if (!content.startsWith('---')) return undefined
+  if (!content.startsWith('---')) return {}
   const end = content.indexOf('\n---', 3)
-  if (end < 0) return undefined
+  if (end < 0) return {}
   const block = content.slice(3, end)
-  const m = block.match(/^description:\s*(.+)$/m)
-  if (!m) return undefined
-  return m[1]!.trim().replace(/^['"]|['"]$/g, '')
+  const pick = (key: string): string | undefined => {
+    const m = block.match(new RegExp('^' + key + ':\\s*(.+)$', 'm'))
+    return m ? m[1]!.trim().replace(/^['"]|['"]$/g, '') : undefined
+  }
+  return {
+    description: pick('description'),
+    model: pick('model'),
+    effort: pick('effort'),
+  }
 }
 
 function dedupeByName<T extends { name: string }>(arr: T[]): T[] {
@@ -189,13 +207,23 @@ function dedupeByName<T extends { name: string }>(arr: T[]): T[] {
 /** Format a list as a multi-line plain-text status block. */
 export function formatList(
   title: string,
-  items: Array<{ name: string; source: string; description?: string }>,
+  items: Array<{
+    name: string
+    source: string
+    description?: string
+    model?: string
+    effort?: string
+  }>,
 ): string {
   if (items.length === 0) return `${title}: (none found)`
   const lines = [`${title} (${items.length}):`]
   for (const it of items) {
+    const tags: string[] = []
+    if (it.model) tags.push(it.model)
+    if (it.effort) tags.push('effort:' + it.effort)
+    const tagPart = tags.length ? `  <${tags.join(' · ')}>` : ''
     const desc = it.description ? `  ${truncate(it.description, 70)}` : ''
-    lines.push(`  ${it.name}  [${it.source}]${desc}`)
+    lines.push(`  ${it.name}  [${it.source}]${tagPart}${desc}`)
   }
   return lines.join('\n')
 }
