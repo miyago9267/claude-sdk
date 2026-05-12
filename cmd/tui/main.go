@@ -637,6 +637,23 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		m.appendLine(marker + bodyStyle.Render(summary))
 	case EvtAssistantEnd:
 		m.flushMarkdown()
+		// A Skill tool_use never gets a matching tool_result (cli.js patches
+		// the system prompt for the next turn instead of returning output).
+		// Without this sweep its row would stay '⏺' forever. Flip every
+		// pending skill row to '✓' when the assistant turn closes.
+		// See docs/learning/cli-internals-skill-invocation.md §3.
+		for id, entry := range m.toolByID {
+			if entry.done || entry.kind != toolKindSkill {
+				continue
+			}
+			if entry.idx >= len(m.transcript) {
+				continue
+			}
+			elapsed := int(time.Since(entry.startedAt).Seconds())
+			m.transcript[entry.idx] = renderSkillCall(entry.name, "ok", elapsed)
+			entry.done = true
+			m.toolByID[id] = entry
+		}
 		m.appendLine("")
 		m.state = stateIdle
 		m.refreshFooter()
@@ -1362,21 +1379,24 @@ func renderHookFlashed(event, name, status string, durationMs int) string {
 }
 
 func renderHook(event, name, status string, durationMs int) string {
-	gear := lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("⚙")
+	gear := lipgloss.NewStyle().Foreground(colViolet).Render("⚙")
 	eventStyled := lipgloss.NewStyle().
 		Background(lipgloss.Color("60")).
 		Foreground(lipgloss.Color("231")).
 		Padding(0, 1).
 		Render(event)
-	nameStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render(name)
+	nameStyled := lipgloss.NewStyle().Foreground(colSecondary).Render(name)
 	suffix := ""
 	switch status {
 	case "ok":
-		suffix = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render(
+		suffix = lipgloss.NewStyle().Foreground(colSuccess).Render(
 			fmt.Sprintf(" ✓ %dms", durationMs))
 	case "err":
-		suffix = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render(
+		suffix = lipgloss.NewStyle().Foreground(colDanger).Render(
 			fmt.Sprintf(" ✗ %dms", durationMs))
+	case "cancelled":
+		suffix = lipgloss.NewStyle().Foreground(colWarning).Render(
+			fmt.Sprintf(" ⊘ %dms (cancelled)", durationMs))
 	default:
 		suffix = lipgloss.NewStyle().Foreground(colSecondary).Render(" started…")
 	}

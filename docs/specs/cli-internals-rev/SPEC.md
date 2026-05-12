@@ -52,3 +52,14 @@ ollama bridge 的 tool routing 都是 surface-level guess。
 - `docs/learning/cli-internals-hook-engine.md`
 - `docs/learning/cli-internals-skill-invocation.md`
 - 本 SPEC + 一份 INDEX 整合所有 anchor 在 docs/learning/cli-anchors.md
+
+## Phase E — HIGH action items derived from this rev
+
+直接從上述三份 learning doc 浮現的 4 個必修項。實作步驟見 `TASKS.md`。
+
+- **E.1 hook outcome enum** — 把 stderr-empty 改用 `outcome` 欄位
+- **E.2 hook durationMs self-compute** — started→response 時間差，cli.js 不給
+- **E.3 mcp name parser join rest** — `[prefix, server, ...rest].join('__')`
+- **E.4 Skill row flip-on-end** — `EvtAssistantEnd` 收到時把 pending skill 翻成 ok
+
+ADR-10: 這四項都是 view layer + IPC payload 層的 bug fix，不動 LLM 行為，不動 V2 session 設定。每項配最小驗證（unit test 或手測）。

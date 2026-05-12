@@ -245,6 +245,11 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     store.touch(logicalId)
   }
 
+  // Hook started→response timing. cli.js doesn't compute duration for us,
+  // and the hook_response message has no duration_ms field — we have to
+  // record the started timestamp and diff on response. Keyed by hook_id.
+  const hookStartedAt = new Map<string, number>()
+
   // Best-effort Claude Max 5-hour window estimate. Anthropic doesn't expose
   // the real quota over the SDK, so we accumulate per-turn cost deltas into
   // a wall-clock 5h window and divide by a configurable budget.
@@ -446,28 +451,48 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         if (msg.type === 'system') {
           const sub = (msg as { subtype?: string }).subtype
           if (sub === 'hook_started') {
-            const m2 = msg as unknown as { hook_event?: string; hook_name?: string }
+            const m2 = msg as unknown as { hook_id?: string; hook_event?: string; hook_name?: string }
+            if (m2.hook_id) hookStartedAt.set(m2.hook_id, Date.now())
             sendToTui({
               type: 'hook',
+              id: m2.hook_id ?? '',
               hookEvent: m2.hook_event ?? '',
               hookName: m2.hook_name ?? '',
               hookStatus: 'started',
             })
           } else if (sub === 'hook_response') {
+            // Authoritative outcome comes from the `outcome` enum
+            // ('success' | 'error' | 'cancelled') — using stderr-empty as
+            // a proxy was wrong because successful hooks can still log
+            // warnings to stderr.
+            // Duration is computed locally from hook_started → now since
+            // cli.js doesn't supply duration_ms.
             const m2 = msg as unknown as {
+              hook_id?: string
               hook_event?: string
               hook_name?: string
               output?: string
               stderr?: string
-              duration_ms?: number
+              exit_code?: number
+              outcome?: 'success' | 'error' | 'cancelled'
             }
-            const ok = !m2.stderr || m2.stderr.trim().length === 0
+            const id = m2.hook_id ?? ''
+            const startedAt = id ? hookStartedAt.get(id) : undefined
+            const duration = startedAt ? Date.now() - startedAt : 0
+            if (id) hookStartedAt.delete(id)
+            const status =
+              m2.outcome === 'cancelled'
+                ? 'cancelled'
+                : m2.outcome === 'error'
+                  ? 'err'
+                  : 'ok'
             sendToTui({
               type: 'hook',
+              id,
               hookEvent: m2.hook_event ?? '',
               hookName: m2.hook_name ?? '',
-              hookStatus: ok ? 'ok' : 'err',
-              durationMs: m2.duration_ms ?? 0,
+              hookStatus: status,
+              durationMs: duration,
             })
           } else if (sub === 'task_started') {
             const m2 = msg as unknown as { task_id?: string; description?: string }
@@ -922,6 +947,21 @@ function resolveBinary(): string {
 }
 
 /**
+ * Mirror of cli.js's PT() — splits `mcp__<server>__<tool>` correctly even
+ * when the tool name itself contains `__`. Returns null when the input
+ * isn't an MCP-shaped tool name.
+ *
+ * Reverse engineered: see docs/learning/cli-internals-tool-dispatch.md §1.
+ */
+export function parseMcpToolName(name: string): { server: string; tool: string } | null {
+  if (!name.startsWith('mcp__')) return null
+  const parts = name.split('__')
+  const [, server, ...rest] = parts
+  if (!server) return null
+  return { server, tool: rest.length > 0 ? rest.join('__') : '' }
+}
+
+/**
  * Route a tool_use to the right HostEvent type based on its name:
  *   - 'Skill'           → skill-call (skill name from input.skill)
  *   - 'mcp__a__b'       → mcp-call (server=a, tool=b)
@@ -940,14 +980,14 @@ function forwardToolUse(
     send({ type: 'skill-call', id, skillName: skill || '(unknown)' })
     return
   }
-  if (name.startsWith('mcp__')) {
-    const [, server = '', tool = ''] = name.split('__')
+  const mcp = parseMcpToolName(name)
+  if (mcp) {
     send({
       type: 'mcp-call',
       id,
-      mcpServer: server,
-      mcpTool: tool,
-      input: summariseToolInput(tool, input),
+      mcpServer: mcp.server,
+      mcpTool: mcp.tool,
+      input: summariseToolInput(mcp.tool, input),
     })
     return
   }
