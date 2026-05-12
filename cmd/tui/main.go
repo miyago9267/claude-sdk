@@ -157,6 +157,21 @@ type model struct {
 
 const popupMaxRows = 6
 
+// Palette — adaptive so light terminals don't lose contrast. Use these
+// instead of raw lipgloss.Color codes for any text that the user reads as
+// foreground (sep glyphs, hints, labels). Backgrounds stay raw codes
+// because the chips paint a fixed-dark surface.
+var (
+	colPrimary   lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "16", Dark: "252"}
+	colSecondary lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "238", Dark: "245"}
+	colMuted     lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "243", Dark: "240"}
+	colAccent    lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "166", Dark: "208"} // Anthropic-ish orange
+	colDanger    lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
+	colSuccess   lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "28", Dark: "78"}
+	colWarning   lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "172", Dark: "214"}
+	colHighlight lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "55", Dark: "213"}
+)
+
 type toolEntry struct {
 	idx       int
 	name      string
@@ -577,8 +592,8 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 			m.toolByID[ev.ToolID] = entry
 		}
 		summary := singleLine(ev.Message, 100)
-		marker := "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("⎿ ")
-		bodyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+		marker := "  " + lipgloss.NewStyle().Foreground(colSecondary).Render("⎿ ")
+		bodyStyle := lipgloss.NewStyle().Foreground(colSecondary)
 		if !ok {
 			bodyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 		}
@@ -650,7 +665,7 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		// /model, /commands, /skills, /status replies actually show up.
 		if ev.Message != "" {
 			m.flushMarkdown()
-			style := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+			style := lipgloss.NewStyle().Foreground(colSecondary)
 			for _, line := range strings.Split(ev.Message, "\n") {
 				m.appendLine(style.Render(line))
 			}
@@ -899,10 +914,17 @@ func (m *model) refreshStatusLines() {
 	m.statusLine2 = m.buildStatusLine2()
 }
 
-// buildStatusLine1: model badge | short cwd + branch | session elapsed
+// buildStatusLine1: brand badge | model badge | short cwd + branch | session elapsed
 func (m *model) buildStatusLine1() string {
-	sep := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" │ ")
-	parts := []string{}
+	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" │ ")
+
+	brand := lipgloss.NewStyle().
+		Background(lipgloss.Color("202")). // Anthropic-ish orange
+		Foreground(lipgloss.Color("231")).
+		Padding(0, 1).
+		Bold(true).
+		Render("claude-sdk")
+	parts := []string{brand}
 
 	if m.model != "" {
 		bg, fg := modelColors(m.model)
@@ -921,10 +943,10 @@ func (m *model) buildStatusLine1() string {
 			if m.branchDirty {
 				marker = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("*")
 			}
-			text += " " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("git:(") +
+			text += " " + lipgloss.NewStyle().Foreground(colSecondary).Render("git:(") +
 				lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(m.branch) +
 				marker +
-				lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(")")
+				lipgloss.NewStyle().Foreground(colSecondary).Render(")")
 		}
 		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(text))
 	}
@@ -944,7 +966,7 @@ func (m *model) buildStatusLine1() string {
 
 // buildStatusLine2: Context bar % | Cost | Compacts
 func (m *model) buildStatusLine2() string {
-	sep := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" │ ")
+	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" │ ")
 	parts := []string{}
 
 	if m.context > 0 || m.contextMax > 0 {
@@ -962,10 +984,10 @@ func (m *model) buildStatusLine2() string {
 			Render("Context")
 		valStyle := lipgloss.NewStyle().Foreground(color).Bold(true)
 		percent := valStyle.Render(fmt.Sprintf("%.0f%%", pct*100))
-		count := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+		count := lipgloss.NewStyle().Foreground(colSecondary).
 			Render(fmt.Sprintf("(%s/%s)", humanTokens(m.context), humanTokens(m.contextMax)))
 		if m.contextMax <= 0 {
-			count = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+			count = lipgloss.NewStyle().Foreground(colSecondary).
 				Render(fmt.Sprintf("(~%s)", humanTokens(m.context)))
 			percent = ""
 		}
@@ -979,7 +1001,7 @@ func (m *model) buildStatusLine2() string {
 
 	if m.cost > 0 {
 		parts = append(parts,
-			lipgloss.NewStyle().Foreground(lipgloss.Color("251")).Render("Cost ")+
+			lipgloss.NewStyle().Foreground(colPrimary).Render("Cost ")+
 				lipgloss.NewStyle().Foreground(lipgloss.Color("215")).Bold(true).
 					Render(fmt.Sprintf("$%.4f", m.cost)))
 	}
@@ -1008,7 +1030,7 @@ func (m *model) buildUsageSegment() string {
 	}
 	color := contextSeverityColor(m.usagePct)
 	bar := renderProgressBar(m.usagePct, 10, color)
-	label := lipgloss.NewStyle().Foreground(lipgloss.Color("251")).Render("Usage")
+	label := lipgloss.NewStyle().Foreground(colPrimary).Render("Usage")
 	pct := lipgloss.NewStyle().Foreground(color).Bold(true).
 		Render(fmt.Sprintf("%.0f%%", m.usagePct*100))
 
@@ -1022,7 +1044,7 @@ func (m *model) buildUsageSegment() string {
 			remaining = 0
 		}
 	}
-	resets := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+	resets := lipgloss.NewStyle().Foreground(colSecondary).
 		Render(fmt.Sprintf("(resets in %s)", formatDuration(time.Duration(remaining)*time.Second)))
 
 	return strings.Join([]string{label, bar, pct, resets}, " ")
@@ -1074,16 +1096,17 @@ func formatDuration(d time.Duration) string {
 	}
 }
 
-// modelColors returns a (bg, fg) tuple keyed by model family. opus → magenta,
-// sonnet → blue, haiku → green, anything else → neutral grey.
+// modelColors returns a (bg, fg) tuple keyed by model family. Picked from
+// the 256-colour cube to read clearly against both light and dark
+// terminals while still distinguishing each family at a glance.
 func modelColors(model string) (lipgloss.Color, lipgloss.Color) {
 	switch {
 	case strings.Contains(model, "opus"):
-		return lipgloss.Color("162"), lipgloss.Color("231") // pink/magenta
+		return lipgloss.Color("198"), lipgloss.Color("231") // hot pink
 	case strings.Contains(model, "sonnet"):
-		return lipgloss.Color("33"), lipgloss.Color("231") // blue
+		return lipgloss.Color("32"), lipgloss.Color("231") // saturated blue
 	case strings.Contains(model, "haiku"):
-		return lipgloss.Color("36"), lipgloss.Color("231") // teal/green
+		return lipgloss.Color("35"), lipgloss.Color("231") // saturated teal
 	default:
 		return lipgloss.Color("240"), lipgloss.Color("231")
 	}
@@ -1145,7 +1168,7 @@ func (m *model) refreshFooter() {
 		elapsed := ""
 		if !m.turnStartedAt.IsZero() {
 			d := time.Since(m.turnStartedAt)
-			elapsed = " " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+			elapsed = " " + lipgloss.NewStyle().Foreground(colSecondary).
 				Render(formatDuration(d))
 		}
 		hint = m.spin.View() + " " +
@@ -1221,7 +1244,7 @@ func renderHook(event, name, status string, durationMs int) string {
 		suffix = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render(
 			fmt.Sprintf(" ✗ %dms", durationMs))
 	default:
-		suffix = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(" started…")
+		suffix = lipgloss.NewStyle().Foreground(colSecondary).Render(" started…")
 	}
 	return fmt.Sprintf("%s %s %s%s", gear, eventStyled, nameStyled, suffix)
 }
@@ -1230,14 +1253,14 @@ func renderTask(desc, status string, elapsedSec, tokens int) string {
 	arrow := lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Render("▸")
 	badge := lipgloss.NewStyle().Background(lipgloss.Color("36")).
 		Foreground(lipgloss.Color("231")).Padding(0, 1).Bold(true).Render("task")
-	descStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("251")).Render(desc)
+	descStyled := lipgloss.NewStyle().Foreground(colPrimary).Render(desc)
 	parts := []string{fmt.Sprintf("%s %s %s", arrow, badge, descStyled)}
 	if elapsedSec > 0 {
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+		parts = append(parts, lipgloss.NewStyle().Foreground(colSecondary).
 			Render(fmt.Sprintf("· %ds", elapsedSec)))
 	}
 	if tokens > 0 {
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+		parts = append(parts, lipgloss.NewStyle().Foreground(colSecondary).
 			Render(fmt.Sprintf("· %s tok", humanTokens(tokens))))
 	}
 	switch status {
@@ -1266,7 +1289,7 @@ func joinWithElapsed(line, status string, elapsed int) string {
 	if elapsed <= 0 || status != "pending" {
 		return line
 	}
-	return line + " " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+	return line + " " + lipgloss.NewStyle().Foreground(colSecondary).
 		Render(fmt.Sprintf("(%ds)", elapsed))
 }
 
@@ -1342,8 +1365,8 @@ func humanTokens(n int) string {
 func renderUserPrompt(text string) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.Color("141")).
-		Foreground(lipgloss.Color("250")).
+		BorderForeground(colHighlight).
+		Foreground(colPrimary).
 		PaddingLeft(1).
 		Render(text)
 }
@@ -1384,7 +1407,7 @@ func (m *model) renderWelcome() string {
 		frame = len(logoColors) - 1
 	}
 	logoStyle := lipgloss.NewStyle().Foreground(logoColors[frame])
-	tipStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
+	tipStyle := lipgloss.NewStyle().Foreground(colSecondary).Italic(true)
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("105")).Bold(true)
 
 	tip := welcomeTips[rand.Intn(len(welcomeTips))]
