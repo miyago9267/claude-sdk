@@ -79,3 +79,16 @@ When reverse engineering a new feature:
 Symbol names like `UR`, `Tb5`, `Gt1`, `PT`, `j4`, `NI`, `wUz`, `jUz` are
 **v0.2.90-specific** — re-grep with the string anchor after every SDK
 upgrade.
+
+## Automated verification
+
+After every `bun add @anthropic-ai/claude-agent-sdk@latest`, run:
+
+```bash
+bash scripts/verify-anchors.sh
+```
+
+The script greps cli.js for every documented anchor, prints hit counts,
+and exits non-zero if any anchor went missing — in that case the
+feature probably moved or the literal changed, and the corresponding
+`docs/learning/cli-internals-*.md` doc needs a re-rev.

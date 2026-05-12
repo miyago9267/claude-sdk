@@ -114,7 +114,12 @@ function scanCommandsDir(dir: string, source: SlashCommand['source'], out: Slash
   }
 }
 
-function scanSkillsDir(dir: string, source: SkillEntry['source'], out: SkillEntry[]): void {
+function scanSkillsDir(
+  dir: string,
+  source: SkillEntry['source'],
+  out: SkillEntry[],
+  namePrefix = '',
+): void {
   let entries: string[]
   try {
     entries = readdirSync(dir)
@@ -130,7 +135,7 @@ function scanSkillsDir(dir: string, source: SkillEntry['source'], out: SkillEntr
     }
     const fm = readFrontmatter(skillFile)
     out.push({
-      name,
+      name: namePrefix ? `${namePrefix}:${name}` : name,
       source,
       path: skillFile,
       description: fm.description,
@@ -160,7 +165,11 @@ function scanPluginsSkillDirs(pluginsRoot: string, out: SkillEntry[]): void {
     return
   }
   for (const plugin of plugins) {
-    scanSkillsDir(join(pluginsRoot, plugin, 'skills'), 'plugin', out)
+    // cli.js builds plugin-skill IDs as `<plugin>:<skill>` (see Gt1/vt1
+    // in docs/learning/cli-internals-skill-invocation.md §4). Mirror that
+    // so /skills shows e.g. `dev-discipline:tdd-guide` matching what the
+    // model actually invokes.
+    scanSkillsDir(join(pluginsRoot, plugin, 'skills'), 'plugin', out, plugin)
   }
 }
 

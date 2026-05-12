@@ -62,6 +62,34 @@ describe('discoverCommands', () => {
   })
 })
 
+describe('plugin-prefixed skill IDs', () => {
+  test("plugin-source skills get '<plugin>:<name>' to match cli.js", () => {
+    const root = makeTempProject()
+    const home = makeTempProject()
+    try {
+      mkdirSync(join(home, '.claude/plugins/dev-discipline/skills/tdd-guide'), { recursive: true })
+      writeFileSync(
+        join(home, '.claude/plugins/dev-discipline/skills/tdd-guide/SKILL.md'),
+        '---\ndescription: TDD\n---\n',
+      )
+      const { discoverSkills } = require('./discover.ts') as typeof import('./discover.ts')
+      const list = discoverSkills({ cwd: root, home })
+      expect(list.find((s) => s.name === 'dev-discipline:tdd-guide')).toBeDefined()
+      // Project-source skills stay unprefixed.
+      mkdirSync(join(root, '.claude/skills/local-only'), { recursive: true })
+      writeFileSync(
+        join(root, '.claude/skills/local-only/SKILL.md'),
+        '---\ndescription: local\n---\n',
+      )
+      const list2 = discoverSkills({ cwd: root, home })
+      expect(list2.find((s) => s.name === 'local-only')).toBeDefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('discoverSkills', () => {
   test('finds project-local .claude/skills/<name>/SKILL.md', () => {
     const root = makeTempProject()

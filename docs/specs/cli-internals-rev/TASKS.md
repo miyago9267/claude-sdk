@@ -39,3 +39,11 @@
 - [x] F.7 turn 結束時 surface `permission_denials[]` 為 `Permission denials this turn:` block
 
 199 tests pass (5 new for hooks-config). Binary rebuilt.
+
+## Phase G — LOW housekeeping
+
+- [x] G.1 plugin-prefixed skill ID (`<plugin>:<name>`) — matches cli.js Gt1
+- [x] G.2 `scripts/verify-anchors.sh` — anchor count grep + non-zero exit when any anchor goes MISSING after SDK upgrade
+- [ ] G.3 skill turn model badge update — skipped; multi-model edge cases (compact running on haiku triggers same path) make this jitter-prone, deferred
+
+200 tests pass (1 new for plugin-prefix). All anchors verified live.
