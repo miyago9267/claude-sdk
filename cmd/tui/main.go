@@ -45,14 +45,23 @@ func main() {
 	}
 
 	// Critical: lipgloss probes stdout for colour support, but our stdout
-	// is the NDJSON IPC pipe (not a TTY) so it would silently downgrade
-	// to plain text. Probing /dev/tty itself via termenv.NewOutput().Profile
-	// would deadlock because that method writes OSC queries and waits for
-	// the tty to echo a response — bubbletea is already reading the same
-	// tty for keystrokes and eats the response. Read the user's terminal
-	// capability from env vars instead (COLORTERM / TERM); this is purely
-	// a string read, no I/O.
-	lipgloss.SetColorProfile(termenv.EnvColorProfile())
+	// is the NDJSON IPC pipe (not a TTY). Probing /dev/tty via termenv
+	// also won't work — that method writes OSC escape queries and reads
+	// a response, but bubbletea is consuming the same tty for input and
+	// eats the bytes (causes a 5s freeze). Reading COLORTERM via
+	// EnvColorProfile is safe but downgrades to ASCII when the shell
+	// doesn't export COLORTERM (e.g. macOS Terminal.app, default zsh).
+	//
+	// Pragmatic choice: hardcode TrueColor — every modern emulator we
+	// expect users on (iTerm2, Terminal.app ≥ 14, Ghostty, Kitty,
+	// Alacritty, Warp, VS Code integrated terminal) handles 24-bit ANSI
+	// sequences or falls back gracefully to the closest 256-cube colour.
+	// Honour the standard NO_COLOR env var as an opt-out.
+	profile := termenv.TrueColor
+	if os.Getenv("NO_COLOR") != "" {
+		profile = termenv.Ascii
+	}
+	lipgloss.SetColorProfile(profile)
 
 	model := newModel(os.Stdout)
 	prog := tea.NewProgram(
