@@ -14,36 +14,38 @@
 
 ### C.1 IPC schema
 
-- [ ] `cmd/tui/ipc.go` — HostEvent 加 `hook`, `task`, `tool-progress`, `mcp-call`, `skill-call` types
-- [ ] 對應欄位：`hookEvent`, `hookName`, `hookStatus`, `taskId`, `taskStatus`, `elapsedSec`, `mcpServer`, `skillName`
+- [x] `cmd/tui/ipc.go` — HostEvent 加 `hook`, `task`, `tool-progress`, `mcp-call`, `skill-call` types
+- [x] 對應欄位：`HookEvent`, `HookName`, `HookStatus`, `DurationMs`, `TaskID`, `TaskStatus`, `TaskDescription`, `ElapsedSec`, `Tokens`, `McpServer`, `McpTool`, `SkillName`
 
 ### C.2 TS forwarder
 
-- [ ] `src/cli/tui.ts` — runTurn 內 stream loop 加 5 種 system / tool_progress / tool_use_summary 的 routing
-- [ ] tool_use name 偵測：`mcp__` 前綴 → `mcp-call`、`Skill` → `skill-call`、其他 → 既有 `tool-use`
-- [ ] Hook 三種 sub-event (started / progress / response) 統合成單一 `hook` event 帶 status
+- [x] `src/cli/tui.ts` — `forwardToolUse` 拆 routing（Skill / mcp__ / 其他）
+- [x] runTurn stream loop 處理 system hook_started/hook_response/task_started/task_progress/task_notification + tool_progress
+- [x] HostEvent interface 加 phase C fields
 
 ### C.3 Go render
 
-- [ ] `cmd/tui/main.go` — applyHostEvent 加 5 個新 case
-- [ ] `renderHook(name, event, status, ms)` helper
-- [ ] `renderTask(desc, status, elapsed, tokens)` helper
-- [ ] `renderMcpCall(server, tool, input)` helper（server 名 hash 上色）
-- [ ] `renderSkillCall(name)` helper
-- [ ] tool elapsed overlay：`toolByID` 加 startedAt，每 1s tick 重 render `(Ns)`
+- [x] `cmd/tui/main.go` — applyHostEvent 加 5 個新 case (`EvtHook`, `EvtTask`, `EvtToolProgress`, `EvtMcpCall`, `EvtSkillCall`)
+- [x] `renderHook(event, name, status, durationMs)` — `⚙ PostToolUse · markdown-lint-fix.sh ✓ 12ms`
+- [x] `renderTask(desc, status, elapsedSec, tokens)` — `▸ task <desc> · 12s · 1.2K tok ✓`
+- [x] `renderMcpCall(server, tool, input, status, elapsed)` — server 名 hash 5 色 palette
+- [x] `renderSkillCall(name, status, elapsed)` — yellow badge
+- [x] toolEntry 加 `startedAt` / `done` / `kind`，1s tick `refreshActiveTools()` 重 render pending 行加 `(Ns)`
+- [x] taskByID 同樣機制，progress 期間 elapsed 自更新
 
 ### C.4 Animation polish
 
-- [ ] Welcome logo 3-frame fade-in（lipgloss color cycle）
-- [ ] Hook fired flash：appendLine 用 bright bg 200ms 後 refresh
-- [ ] User send flash：input box border 短暫變綠
+- [x] Tool elapsed overlay (1s tick auto-refresh)
+- [ ] Welcome logo 3-frame fade-in（lipgloss color cycle） — 留下個 commit
+- [ ] Hook fired flash：appendLine 用 bright bg 200ms 後 refresh — 留下個 commit
+- [ ] User send flash：input box border 短暫變綠 — 留下個 commit
 
 ### C.5 Verification
 
-- [ ] 手測：跑一個會 trigger PostToolUse hook 的操作（Edit *.md → markdown-lint-fix.sh）
-- [ ] 手測：呼叫 `mcp__codex__*` 應看到 `mcp:codex` 行
+- [x] Build green：`bash scripts/build-tui.sh` + `bun test src/` (156 pass)
+- [ ] 手測：呼叫 `mcp__codex__*` 應看到 `mcp:codex` 行 — 待 user 跑
+- [ ] 手測：跑 `Edit *.md` 觸發 `markdown-lint-fix.sh` 應看到 `⚙ hook PostToolUse`
 - [ ] 手測：用 `Task` tool 跑 sub-agent 應看到 task 進度
-- [ ] tests：純 helper render 函式不需互動，可加單元測試（renderHook / renderTask / renderMcpCall 邊界）
 
 ## 後續批次（暫不展開）
 

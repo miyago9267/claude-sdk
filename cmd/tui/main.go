@@ -141,6 +141,9 @@ type model struct {
 	suggestList  []Candidate
 	suggestIdx   int
 
+	// Active tasks (sub-agent workflows) — same idea as toolByID.
+	taskByID map[string]*taskEntry
+
 	vp    viewport.Model
 	input textarea.Model
 	spin  spinner.Model
@@ -151,9 +154,27 @@ type model struct {
 const popupMaxRows = 6
 
 type toolEntry struct {
-	idx   int
-	name  string
-	input string
+	idx       int
+	name      string
+	input     string
+	startedAt time.Time
+	done      bool
+	kind      toolKind // builtin / mcp / skill — drives render style
+}
+
+type toolKind int
+
+const (
+	toolKindBuiltin toolKind = iota
+	toolKindMcp
+	toolKindSkill
+)
+
+type taskEntry struct {
+	idx       int
+	desc      string
+	startedAt time.Time
+	done      bool
 }
 
 func newModel(uiOut io.Writer) *model {
@@ -180,6 +201,7 @@ func newModel(uiOut io.Writer) *model {
 		spin:             sp,
 		out:              newWriter(uiOut),
 		toolByID:         map[string]toolEntry{},
+		taskByID:         map[string]*taskEntry{},
 		mdRenderer:       r,
 		mdStart:          -1,
 		sessionStartedAt: time.Now(),
@@ -217,6 +239,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// session timer and cooking-elapsed counter advance.
 		m.refreshStatusLines()
 		m.refreshFooter()
+		m.refreshActiveTools()
 		return m, tickEverySecond()
 
 	case hostMsg:
@@ -400,15 +423,75 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 		m.streamMarkdown(ev.Text)
 	case EvtToolUse:
 		m.flushMarkdown()
-		line := renderToolUse(ev.ToolName, ev.ToolInput, "pending")
+		line := renderToolUse(ev.ToolName, ev.ToolInput, "pending", 0)
 		m.appendLine(line)
 		if ev.ToolID != "" {
 			m.toolByID[ev.ToolID] = toolEntry{
-				idx:   len(m.transcript) - 1,
-				name:  ev.ToolName,
-				input: ev.ToolInput,
+				idx:       len(m.transcript) - 1,
+				name:      ev.ToolName,
+				input:     ev.ToolInput,
+				startedAt: time.Now(),
+				kind:      toolKindBuiltin,
 			}
 		}
+	case EvtMcpCall:
+		m.flushMarkdown()
+		line := renderMcpCall(ev.McpServer, ev.McpTool, ev.ToolInput, "pending", 0)
+		m.appendLine(line)
+		if ev.ToolID != "" {
+			m.toolByID[ev.ToolID] = toolEntry{
+				idx:       len(m.transcript) - 1,
+				name:      ev.McpServer + ":" + ev.McpTool,
+				input:     ev.ToolInput,
+				startedAt: time.Now(),
+				kind:      toolKindMcp,
+			}
+		}
+	case EvtSkillCall:
+		m.flushMarkdown()
+		line := renderSkillCall(ev.SkillName, "pending", 0)
+		m.appendLine(line)
+		if ev.ToolID != "" {
+			m.toolByID[ev.ToolID] = toolEntry{
+				idx:       len(m.transcript) - 1,
+				name:      ev.SkillName,
+				startedAt: time.Now(),
+				kind:      toolKindSkill,
+			}
+		}
+	case EvtHook:
+		m.flushMarkdown()
+		m.appendLine(renderHook(ev.HookEvent, ev.HookName, ev.HookStatus, ev.DurationMs))
+	case EvtTask:
+		m.flushMarkdown()
+		switch ev.TaskStatus {
+		case "started":
+			line := renderTask(ev.TaskDescription, "started", 0, 0)
+			m.appendLine(line)
+			if ev.TaskID != "" {
+				m.taskByID[ev.TaskID] = &taskEntry{
+					idx:       len(m.transcript) - 1,
+					desc:      ev.TaskDescription,
+					startedAt: time.Now(),
+				}
+			}
+		case "progress":
+			if entry, ok := m.taskByID[ev.TaskID]; ok && entry.idx < len(m.transcript) {
+				elapsed := int(time.Since(entry.startedAt).Seconds())
+				m.transcript[entry.idx] = renderTask(entry.desc, "progress", elapsed, ev.Tokens)
+			}
+		case "completed", "failed", "stopped":
+			if entry, ok := m.taskByID[ev.TaskID]; ok && entry.idx < len(m.transcript) {
+				elapsed := int(time.Since(entry.startedAt).Seconds())
+				m.transcript[entry.idx] = renderTask(entry.desc, ev.TaskStatus, elapsed, ev.Tokens)
+				entry.done = true
+			}
+		}
+	case EvtToolProgress:
+		// SDK push for elapsed sync; the 1s tick already redraws active
+		// tools, so this event is a no-op except as a heartbeat. Treat it
+		// as a hint to refresh in case the tick was missed.
+		m.refreshActiveTools()
 	case EvtToolResult:
 		m.flushMarkdown()
 		ok := ev.OK == nil || *ev.OK
@@ -419,7 +502,18 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 			if !ok {
 				status = "err"
 			}
-			m.transcript[entry.idx] = renderToolUse(entry.name, entry.input, status)
+			elapsed := int(time.Since(entry.startedAt).Seconds())
+			switch entry.kind {
+			case toolKindMcp:
+				server, tool := splitMcpName(entry.name)
+				m.transcript[entry.idx] = renderMcpCall(server, tool, entry.input, status, elapsed)
+			case toolKindSkill:
+				m.transcript[entry.idx] = renderSkillCall(entry.name, status, elapsed)
+			default:
+				m.transcript[entry.idx] = renderToolUse(entry.name, entry.input, status, elapsed)
+			}
+			entry.done = true
+			m.toolByID[ev.ToolID] = entry
 		}
 		summary := singleLine(ev.Message, 100)
 		marker := "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("⎿ ")
@@ -997,22 +1091,168 @@ func (m *model) refreshFooter() {
 	m.footer = hint
 }
 
-func renderToolUse(name, input, status string) string {
-	var dot string
+func renderToolUse(name, input, status string, elapsed int) string {
+	dot := statusGlyph(status, lipgloss.Color("220"))
+	nameStyled := lipgloss.NewStyle().Bold(true).Render(name)
+	suffix := ""
+	if input != "" {
+		suffix = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("(" + input + ")")
+	}
+	return joinWithElapsed(fmt.Sprintf("%s %s%s", dot, nameStyled, suffix), status, elapsed)
+}
+
+// renderMcpCall formats a tool_use whose name was mcp__<server>__<tool>.
+// The server name is hashed to a stable colour so different servers stand
+// out at a glance.
+func renderMcpCall(server, tool, input, status string, elapsed int) string {
+	dot := statusGlyph(status, lipgloss.Color("39"))
+	serverStyle := lipgloss.NewStyle().Background(mcpServerColor(server)).
+		Foreground(lipgloss.Color("231")).Padding(0, 1).Bold(true)
+	header := fmt.Sprintf("%s %s %s",
+		dot,
+		serverStyle.Render("mcp:"+server),
+		lipgloss.NewStyle().Bold(true).Render(tool),
+	)
+	if input != "" {
+		header += lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("(" + input + ")")
+	}
+	return joinWithElapsed(header, status, elapsed)
+}
+
+func renderSkillCall(name, status string, elapsed int) string {
+	dot := statusGlyph(status, lipgloss.Color("214"))
+	badge := lipgloss.NewStyle().Background(lipgloss.Color("142")).
+		Foreground(lipgloss.Color("231")).Padding(0, 1).Bold(true).Render("skill")
+	nameStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("228")).Bold(true).Render(name)
+	return joinWithElapsed(fmt.Sprintf("%s %s %s", dot, badge, nameStyled), status, elapsed)
+}
+
+func renderHook(event, name, status string, durationMs int) string {
+	gear := lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Render("⚙")
+	eventStyled := lipgloss.NewStyle().
+		Background(lipgloss.Color("60")).
+		Foreground(lipgloss.Color("231")).
+		Padding(0, 1).
+		Render(event)
+	nameStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render(name)
+	suffix := ""
 	switch status {
 	case "ok":
-		dot = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render("✓")
+		suffix = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render(
+			fmt.Sprintf(" ✓ %dms", durationMs))
 	case "err":
-		dot = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("✗")
+		suffix = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render(
+			fmt.Sprintf(" ✗ %dms", durationMs))
 	default:
-		dot = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("⏺")
+		suffix = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(" started…")
 	}
-	nameStyled := lipgloss.NewStyle().Bold(true).Render(name)
-	if input == "" {
-		return fmt.Sprintf("%s %s", dot, nameStyled)
+	return fmt.Sprintf("%s %s %s%s", gear, eventStyled, nameStyled, suffix)
+}
+
+func renderTask(desc, status string, elapsedSec, tokens int) string {
+	arrow := lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Render("▸")
+	badge := lipgloss.NewStyle().Background(lipgloss.Color("36")).
+		Foreground(lipgloss.Color("231")).Padding(0, 1).Bold(true).Render("task")
+	descStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("251")).Render(desc)
+	parts := []string{fmt.Sprintf("%s %s %s", arrow, badge, descStyled)}
+	if elapsedSec > 0 {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+			Render(fmt.Sprintf("· %ds", elapsedSec)))
 	}
-	args := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("(" + input + ")")
-	return fmt.Sprintf("%s %s%s", dot, nameStyled, args)
+	if tokens > 0 {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+			Render(fmt.Sprintf("· %s tok", humanTokens(tokens))))
+	}
+	switch status {
+	case "completed":
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render("✓"))
+	case "failed":
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("✗"))
+	case "stopped":
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("⏸"))
+	}
+	return strings.Join(parts, " ")
+}
+
+func statusGlyph(status string, pendingColor lipgloss.Color) string {
+	switch status {
+	case "ok":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render("✓")
+	case "err":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("✗")
+	default:
+		return lipgloss.NewStyle().Foreground(pendingColor).Render("⏺")
+	}
+}
+
+func joinWithElapsed(line, status string, elapsed int) string {
+	if elapsed <= 0 || status != "pending" {
+		return line
+	}
+	return line + " " + lipgloss.NewStyle().Foreground(lipgloss.Color("245")).
+		Render(fmt.Sprintf("(%ds)", elapsed))
+}
+
+// mcpServerColor maps a server name to a stable lipgloss colour from a small
+// palette so different servers visually separate.
+func mcpServerColor(name string) lipgloss.Color {
+	palette := []lipgloss.Color{
+		lipgloss.Color("39"),  // cyan
+		lipgloss.Color("141"), // violet
+		lipgloss.Color("204"), // pink
+		lipgloss.Color("172"), // amber
+		lipgloss.Color("36"),  // teal
+	}
+	if name == "" {
+		return palette[0]
+	}
+	var sum int
+	for _, c := range name {
+		sum += int(c)
+	}
+	return palette[sum%len(palette)]
+}
+
+func splitMcpName(label string) (server, tool string) {
+	if i := strings.IndexByte(label, ':'); i >= 0 {
+		return label[:i], label[i+1:]
+	}
+	return label, ""
+}
+
+// refreshActiveTools rewrites every still-pending tool line with the current
+// elapsed time. Driven by the 1s tick.
+func (m *model) refreshActiveTools() {
+	for id, entry := range m.toolByID {
+		if entry.done {
+			continue
+		}
+		if entry.idx >= len(m.transcript) {
+			continue
+		}
+		elapsed := int(time.Since(entry.startedAt).Seconds())
+		switch entry.kind {
+		case toolKindMcp:
+			server, tool := splitMcpName(entry.name)
+			m.transcript[entry.idx] = renderMcpCall(server, tool, entry.input, "pending", elapsed)
+		case toolKindSkill:
+			m.transcript[entry.idx] = renderSkillCall(entry.name, "pending", elapsed)
+		default:
+			m.transcript[entry.idx] = renderToolUse(entry.name, entry.input, "pending", elapsed)
+		}
+		_ = id
+	}
+	for _, entry := range m.taskByID {
+		if entry.done {
+			continue
+		}
+		if entry.idx >= len(m.transcript) {
+			continue
+		}
+		elapsed := int(time.Since(entry.startedAt).Seconds())
+		m.transcript[entry.idx] = renderTask(entry.desc, "progress", elapsed, 0)
+	}
+	m.refreshViewport()
 }
 
 func humanTokens(n int) string {

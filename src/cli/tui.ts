@@ -47,6 +47,11 @@ interface HostEvent {
     | 'text-delta'
     | 'tool-use'
     | 'tool-result'
+    | 'tool-progress'
+    | 'mcp-call'
+    | 'skill-call'
+    | 'hook'
+    | 'task'
     | 'assistant-end'
     | 'result'
     | 'error'
@@ -75,6 +80,20 @@ interface HostEvent {
   message?: string
   reason?: string
   payload?: string
+
+  // Phase C
+  hookEvent?: string
+  hookName?: string
+  hookStatus?: string
+  durationMs?: number
+  taskId?: string
+  taskStatus?: string
+  taskDescription?: string
+  elapsedSec?: number
+  tokens?: number
+  mcpServer?: string
+  mcpTool?: string
+  skillName?: string
 }
 
 interface BuiltinCmd {
@@ -314,13 +333,84 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           }
           if (e.type === 'content_block_start' && e.content_block.type === 'tool_use') {
             seenToolUseFromStream.add(e.content_block.id)
+            forwardToolUse(
+              e.content_block.id,
+              e.content_block.name,
+              e.content_block.input,
+              sendToTui,
+            )
+          }
+          continue
+        }
+        if (msg.type === 'system') {
+          const sub = (msg as { subtype?: string }).subtype
+          if (sub === 'hook_started') {
+            const m2 = msg as unknown as { hook_event?: string; hook_name?: string }
             sendToTui({
-              type: 'tool-use',
-              name: e.content_block.name,
-              id: e.content_block.id,
-              input: summariseToolInput(e.content_block.name, e.content_block.input),
+              type: 'hook',
+              hookEvent: m2.hook_event ?? '',
+              hookName: m2.hook_name ?? '',
+              hookStatus: 'started',
+            })
+          } else if (sub === 'hook_response') {
+            const m2 = msg as unknown as {
+              hook_event?: string
+              hook_name?: string
+              output?: string
+              stderr?: string
+              duration_ms?: number
+            }
+            const ok = !m2.stderr || m2.stderr.trim().length === 0
+            sendToTui({
+              type: 'hook',
+              hookEvent: m2.hook_event ?? '',
+              hookName: m2.hook_name ?? '',
+              hookStatus: ok ? 'ok' : 'err',
+              durationMs: m2.duration_ms ?? 0,
+            })
+          } else if (sub === 'task_started') {
+            const m2 = msg as unknown as { task_id?: string; description?: string }
+            sendToTui({
+              type: 'task',
+              taskId: m2.task_id ?? '',
+              taskDescription: m2.description ?? '',
+              taskStatus: 'started',
+            })
+          } else if (sub === 'task_progress') {
+            const m2 = msg as unknown as {
+              task_id?: string
+              description?: string
+              usage?: { total_tokens?: number }
+            }
+            sendToTui({
+              type: 'task',
+              taskId: m2.task_id ?? '',
+              taskDescription: m2.description ?? '',
+              taskStatus: 'progress',
+              tokens: m2.usage?.total_tokens ?? 0,
+            })
+          } else if (sub === 'task_notification') {
+            const m2 = msg as unknown as {
+              task_id?: string
+              status?: 'completed' | 'failed' | 'stopped'
+              summary?: string
+            }
+            sendToTui({
+              type: 'task',
+              taskId: m2.task_id ?? '',
+              taskStatus: m2.status ?? 'completed',
+              message: m2.summary ?? '',
             })
           }
+          continue
+        }
+        if (msg.type === 'tool_progress') {
+          const m2 = msg as unknown as { tool_use_id?: string; elapsed_time_seconds?: number }
+          sendToTui({
+            type: 'tool-progress',
+            id: m2.tool_use_id ?? '',
+            elapsedSec: Math.round(m2.elapsed_time_seconds ?? 0),
+          })
           continue
         }
         if (msg.type === 'user') {
@@ -358,12 +448,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
               if (b?.type === 'tool_use' && typeof b.name === 'string') {
                 const id = typeof b.id === 'string' ? (b.id as string) : ''
                 if (!seenToolUseFromStream.has(id)) {
-                  sendToTui({
-                    type: 'tool-use',
-                    name: b.name as string,
-                    id,
-                    input: summariseToolInput(b.name as string, b.input),
-                  })
+                  forwardToolUse(id, b.name as string, b.input, sendToTui)
                 }
               }
             }
@@ -585,6 +670,44 @@ async function* readNdjson(stream: Readable): AsyncGenerator<UIEvent> {
 function resolveBinary(): string {
   const here = dirname(fileURLToPath(import.meta.url))
   return resolve(here, '../../bin/claude-sdk-tui')
+}
+
+/**
+ * Route a tool_use to the right HostEvent type based on its name:
+ *   - 'Skill'           → skill-call (skill name from input.skill)
+ *   - 'mcp__a__b'       → mcp-call (server=a, tool=b)
+ *   - everything else   → tool-use (built-in tools)
+ */
+function forwardToolUse(
+  id: string,
+  name: string,
+  input: unknown,
+  send: (ev: HostEvent) => void,
+): void {
+  if (name === 'Skill') {
+    const skill = input && typeof input === 'object' && 'skill' in (input as Record<string, unknown>)
+      ? String((input as Record<string, unknown>).skill ?? '')
+      : ''
+    send({ type: 'skill-call', id, skillName: skill || '(unknown)' })
+    return
+  }
+  if (name.startsWith('mcp__')) {
+    const [, server = '', tool = ''] = name.split('__')
+    send({
+      type: 'mcp-call',
+      id,
+      mcpServer: server,
+      mcpTool: tool,
+      input: summariseToolInput(tool, input),
+    })
+    return
+  }
+  send({
+    type: 'tool-use',
+    id,
+    name,
+    input: summariseToolInput(name, input),
+  })
 }
 
 function extractContextWindow(r: SDKResultMessage): number | undefined {

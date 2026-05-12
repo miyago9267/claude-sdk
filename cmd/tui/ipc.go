@@ -38,6 +38,20 @@ type HostEvent struct {
 	Message       string  `json:"message,omitempty"`
 	Reason        string  `json:"reason,omitempty"`
 	Payload       string  `json:"payload,omitempty"`
+
+	// Phase C: skill / hook / mcp / task event surface
+	HookEvent       string `json:"hookEvent,omitempty"`        // PreToolUse / PostToolUse / Stop / ...
+	HookName        string `json:"hookName,omitempty"`         // shell script name
+	HookStatus      string `json:"hookStatus,omitempty"`       // started / ok / err
+	DurationMs      int    `json:"durationMs,omitempty"`
+	TaskID          string `json:"taskId,omitempty"`
+	TaskStatus      string `json:"taskStatus,omitempty"`       // started / progress / completed / failed / stopped
+	TaskDescription string `json:"taskDescription,omitempty"`
+	ElapsedSec      int    `json:"elapsedSec,omitempty"`
+	Tokens          int    `json:"tokens,omitempty"`
+	McpServer       string `json:"mcpServer,omitempty"`
+	McpTool         string `json:"mcpTool,omitempty"`
+	SkillName       string `json:"skillName,omitempty"`
 }
 
 // HostEventTypes documents every value of HostEvent.Type. Comments here are
@@ -54,6 +68,13 @@ const (
 	EvtBusy         = "busy"          // host is mid-turn (true/false via Reason)
 	EvtThinking     = "thinking"      // model is in thinking phase
 	EvtCapabilities = "capabilities"  // discovered commands/skills (Payload is JSON)
+
+	// Phase C surface
+	EvtHook         = "hook"          // hook fired (started / ok / err with duration)
+	EvtTask         = "task"          // sub-agent task lifecycle
+	EvtToolProgress = "tool-progress" // existing tool's elapsed seconds tick
+	EvtMcpCall      = "mcp-call"      // tool_use whose name is mcp__<srv>__<tool>
+	EvtSkillCall    = "skill-call"    // tool_use whose name is Skill (built-in dispatcher)
 )
 
 // Capabilities is the parsed payload of an EvtCapabilities event.
