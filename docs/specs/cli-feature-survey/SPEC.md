@@ -372,6 +372,65 @@ JSON-encoded payload 一個 string field 就涵蓋所有變體。
 `AskRequest.kind = 'text'` 已預留但 picker 尚未 render textarea。第一個
 text caller 出現時再加（很可能是 elicitation form 模式）。
 
+## Section 5 — External Reference Cross-check
+
+User-pointed reference: `luongnv89/claude-howto/zh/10-cli/README.md` (民間整理的
+Claude Code CLI 文件，2026-05 抓取)。把它的描述跟 cli.js 內部實際對一遍。
+
+### 5.1 Doc 跟 cli.js 對得上的部分
+
+- 三種 mode（REPL / `-p` print / `-c|-r` resume）— 對應 §1.1
+- Subagent 優先順序 CLI > user > project — 跟我們的 discoverAgents 順序一致
+- `--fork-session` 描述對得上：resume 時生新 session id 而非沿用 — 跟
+  sdk.d.ts 一致
+- `--effort` 是 thinking budget（low / medium / high / xhigh / max）—
+  之前 UNSUPPORTED，未來可加 `/effort` slash + 接 sessionOptions.thinkingConfig
+- `--fallback-model` 是 overload 自動 fallback，**只在 `-p` 生效**
+
+### 5.2 Doc 提到但 cli.js grep 不到的部分
+
+doc 可能是抽象描述而非實際 var 名，引用前要驗：
+
+| Doc 說的 | cli.js grep 結果 |
+|---|---|
+| `--disable-auto-checkpoints` flag | 找不到 |
+| `CLAUDE_MODEL` env var | 找不到（實際是 `ANTHROPIC_MODEL`） |
+| `CLAUDE_EFFORT` env var | 找不到 |
+| `CLAUDE_WORKING_DIRECTORY` | 找不到 |
+| `CLAUDE_OUTPUT_FORMAT` | 找不到 |
+| `claude auth login/logout/status` | `auth` 子命令存在，但 login/logout/status 子動作沒 grep 到字面字串 |
+| Auto-checkpoint UI | 找不到對應字串 |
+
+結論：doc 可信度中等，引用 env var 名前先 grep 確認。
+
+### 5.3 cli.js 真實環境變數（節選）
+
+`ANTHROPIC_*`：API_KEY / AUTH_TOKEN / MODEL / BASE_URL / DEFAULT_(OPUS|SONNET|HAIKU)_MODEL
+/ AWS_(BASE_URL|API_KEY|WORKSPACE_ID) / BEDROCK_BASE_URL / FOUNDRY_(API_KEY|BASE_URL|AUTH_TOKEN|RESOURCE)
+/ CUSTOM_(HEADERS|MODEL_OPTION*) / BETAS / LOG / ...
+
+`CLAUDE_*`：API_KEY / CODE_(ACCOUNT_UUID|ACTION|AGENT_NAME|API_BASE_URL|ATTRIBUTION_HEADER|...)
+/ AGENT_SDK_(CLIENT_APP|DISABLE_BUILTIN_AGENTS|MCP_NO_PREFIX|VERSION) / AUTOCOMPACT_PCT_OVERRIDE
+/ AUTO_BACKGROUND_TASKS / AFTER_LAST_COMPACT / BASH_MAINTAIN_PROJECT_WORKING_DIR / ...
+
+我們已用：`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `CLAUDE_CODE_REMOTE`（patches/RECOMMENDED_SUBPROCESS_ENV）。
+
+### 5.4 從 cross-check 浮現的候選工作
+
+| Item | 優先級 | 備註 |
+|---|---|---|
+| `/effort` slash + thinkingConfig wire | MED | thinkingConfig 我們在 V2 patch 已 unlock，wire 到 args / slash 即可 |
+| `--fallback-model` 接通 | LOW | 只 `-p` 生效，使用者場景少 |
+| `--fork-session` 接通 | LOW | 跟我們的 logical id 系統衝突，需設計 |
+| 多 provider env vars (Bedrock / Foundry) | SKIP | 走 SDK 內部，使用者直接設 env 即可 |
+| `claude auth status` 對等命令 | LOW | 確認登入狀態 — 可加 `/auth` slash 顯示當前 token / quota |
+
+### ADR-9: 不直接抄民間 doc 的字面描述
+
+對於外部 reference 文件，先用 grep / `--help` / SDK type 對核實再採用。
+之前發現 doc 列的 `CLAUDE_MODEL` / `CLAUDE_EFFORT` env vars cli.js 找不到，
+若照抄會做出 user 無法 trigger 的功能。
+
 ## Out of Scope
 
 - 重做 cli.js 任何核心功能（permission system、tool dispatcher、hook engine）
