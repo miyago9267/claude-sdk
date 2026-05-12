@@ -21,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // IPC layout (set up by the TS host):
@@ -42,6 +43,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Run via `claude-sdk --tui`, not directly.")
 		os.Exit(2)
 	}
+
+	// Critical: lipgloss probes stdout for colour support, but our stdout
+	// is the NDJSON IPC pipe (not a TTY) so it would silently downgrade
+	// to plain text. Re-probe via /dev/tty and lock the profile in. This
+	// is what makes any chip / glyph actually paint colour.
+	ttyOutput := termenv.NewOutput(tty)
+	lipgloss.SetColorProfile(ttyOutput.Profile)
 
 	model := newModel(os.Stdout)
 	prog := tea.NewProgram(
