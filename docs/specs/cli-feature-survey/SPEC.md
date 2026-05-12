@@ -252,6 +252,77 @@ Bash / Read / Write / Edit / Glob / Grep / Agent / WebSearch / WebFetch / Task (
 
 ---
 
+## Section 3 — Phase C: Event Surface (skill / hook / mcp + animation polish)
+
+User 指定的下一波目標：把「目前 cli.js 內部跑了什麼」攤到 TUI 上。我們現在
+只 render `tool_use` / `tool_result`，但 SDK stream 其實還吐：
+
+| SDK message | subtype | 我們狀態 | 該顯示的 |
+|---|---|---|---|
+| `SDKHookStartedMessage` | system / `hook_started` | ❌ ignore | `⚙ hook PreToolUse · tty-respond.sh` |
+| `SDKHookProgressMessage` | system / `hook_progress` | ❌ | append stdout/stderr 摘要 |
+| `SDKHookResponseMessage` | system / `hook_response` | ❌ | `⚙ hook ... ✓ done (Xms)` |
+| `SDKTaskStartedMessage` | system / `task_started` | ❌ | `▸ task <desc> · type=…` |
+| `SDKTaskProgressMessage` | system / `task_progress` | ❌ | spinner + elapsed + tool_uses |
+| `SDKTaskNotificationMessage` | system / `task_notification` | ❌ | `▸ task ✓/✗ <summary>` |
+| `SDKToolProgressMessage` | `tool_progress` | ❌ | tool_use 旁加 elapsed `(12s)` |
+| `SDKToolUseSummaryMessage` | `tool_use_summary` | ❌ | 折疊一連串 tool 為一句話 |
+| `tool_use` 名 = `mcp__<srv>__<tool>` | (existing) | ⚠️ render 一視同仁 | 顯示 `mcp:codex exec` 並染 server 顏色 |
+| `tool_use` 名 = `Skill` | (existing) | ⚠️ | 顯示 `🅼 skill <name>`（從 input 取 skill name）|
+| jsonl `skill_listing` record | — | ❌ | inline 顯示載入 N 個 skill |
+| jsonl `hook_success` record | — | ❌ | （冗餘 — 跟 SDK hook_response 重複，二選一） |
+
+### Phase C.1 — IPC schema 擴充
+
+新 HostEvent types (TS → Go):
+
+- `hook` — { hookEvent, hookName, status: 'started'|'ok'|'err', durationMs?, summary? }
+- `task` — { taskId, description, status: 'started'|'progress'|'completed'|'failed'|'stopped', elapsedSec?, tokens?, summary? }
+- `tool-progress` — { id, elapsedSec } (existing tool-use line gets timer overlay)
+- `mcp-call` — { server, tool, id, input } (取代部分 tool-use 邏輯，當 name 開頭 `mcp__`)
+- `skill-call` — { name, id } (取代部分 tool-use 邏輯，當 name 是 `Skill`)
+
+### Phase C.2 — Go render
+
+新 transcript line 風格（lipgloss palette）:
+
+- `⚙ hook PreToolUse · tty-respond.sh` — 暗紫，hook event 名加色標
+- `▸ task spec-writer · 12s · 4 tool_uses` — 青色 + spinner overlay during task progress
+- `🅼 skill dev-discipline:tdd-guide` — 黃色
+- `mcp:codex exec({"command":"ls"})` — server 名按字串 hash 上色，跟普通 tool 區分
+- 既有 `⏺ Bash(...)` / `✓` / `✗` 不變
+
+### Phase C.3 — 細碎動畫
+
+| 元素 | 現狀 | Phase C 後 |
+|---|---|---|
+| Spinner | 只在 `busy=true` footer | 各 task / tool 旁也輪一個 mini spinner |
+| Tool elapsed | 無 | 每個未完成 `⏺` 後面顯示 `(12s)`，1s tick 自更新 |
+| Welcome logo | 靜態 ASCII | 開場 fade-in（lipgloss adaptive color，分 3 frames） |
+| Hook fired | 無 | 出現時先閃白 200ms 再轉灰 |
+| Cursor blink | 預設 textarea blink | OK，不改 |
+| User prompt 送出 | 無 | 送出瞬間 input box border 閃綠 200ms |
+
+### Phase C.4 — 驗證點
+
+- 跑一個會觸發 hook 的 tool（user 有 `markdown-lint-fix.sh` 等 PostToolUse 設定）→ 應看到 `⚙ hook PostToolUse`
+- `mcp__codex__*` 工具呼叫應顯示為 `mcp:codex` 變色行
+- `Task` tool（內建 sub-agent dispatcher）應觸發 `task` event 流，顯示 task 進度
+
+### ADR-5: Phase C 訊號是 view-only，不改 LLM 行為
+
+我們只觀察 SDK stream 然後 render，不改變 hook / skill / mcp 的觸發機制 —
+那是 cli.js 自己的事。我們只是把它「演」給 user 看。
+
+### ADR-6: MCP / Skill 呼叫從 tool_use 分流，不另開 SDK 通道
+
+判別邏輯靠 tool_use.name 前綴：
+- `mcp__<server>__<tool>` → 走 `mcp-call` event
+- `Skill` (內建 dispatcher) → 走 `skill-call` event，skill name 從 `input.skill` 取
+- 其他 → 維持 `tool-use`
+
+這樣 IPC 數量不爆，TS 端只在 forward 時做 routing。
+
 ## Out of Scope
 
 - 重做 cli.js 任何核心功能（permission system、tool dispatcher、hook engine）
