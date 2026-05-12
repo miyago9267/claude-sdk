@@ -265,17 +265,25 @@ export function createOllamaServer(
         let result: SDKResultMessage | null = null
         let assistantText = ''
         let chunksEmitted = 0
+        let firstChunkAt = 0
+        let firstSdkMsgAt = 0
+        let assistantTurnCount = 0
+        const tStart = performance.now()
         await stream.writeSSE({ data: JSON.stringify(converter.buildRoleChunk()) })
         chunksEmitted++
         try {
           await acquired.session.send(buildSendPayload(acquired.promptToSend, attachments))
+          const tSentAt = performance.now()
           for await (const msg of acquired.session.stream()) {
+            if (firstSdkMsgAt === 0) firstSdkMsgAt = performance.now()
             debugLog(`[chat] sdk msg type=${msg.type}`)
             if (msg.type === 'assistant') {
+              assistantTurnCount++
               assistantText += extractAssistantBlocks(msg as SDKAssistantMessage).text
             }
             const chunks = handleStreamingMessage(converter, msg)
             for (const chunk of chunks) {
+              if (firstChunkAt === 0) firstChunkAt = performance.now()
               await stream.writeSSE({ data: JSON.stringify(chunk) })
               chunksEmitted++
             }
@@ -290,7 +298,18 @@ export function createOllamaServer(
           }
           await stream.writeSSE({ data: '[DONE]' })
           rememberSession({ pool, model, history, assistantText, session: acquired.session })
-          debugLog(`[chat] done, chunks=${chunksEmitted + 2} pool_size=${pool.size()}`)
+          const tEnd = performance.now()
+          logTimings({
+            requestId,
+            poolHit: acquired.reused,
+            sendMs: tSentAt - tStart,
+            firstSdkMsgMs: firstSdkMsgAt ? firstSdkMsgAt - tSentAt : -1,
+            firstChunkMs: firstChunkAt ? firstChunkAt - tStart : -1,
+            totalMs: tEnd - tStart,
+            chunks: chunksEmitted + 2,
+            assistantTurns: assistantTurnCount,
+            result,
+          })
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           debugLog(`[chat] ERROR: ${message}`)
@@ -404,6 +423,46 @@ function rememberSession(args: {
 function lastIndexOf<T>(arr: T[], pred: (v: T) => boolean): number {
   for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i]!)) return i
   return -1
+}
+
+/**
+ * Per-turn diagnostic line. Emit on stderr when OLLAMA_BRIDGE_DEBUG is set.
+ * Each metric is the dominant time-eater in one of the failure modes:
+ *   - sendMs high  → V2 child process cold start (pool_hit was false)
+ *   - firstSdkMsgMs high → Anthropic API cache miss + slow first token
+ *   - cache_read=0 → cache miss; high cache_read → cache hit (fast)
+ *   - assistantTurns > 1 → agent loop doing tool work (slow by design)
+ */
+function logTimings(args: {
+  requestId: string
+  poolHit: boolean
+  sendMs: number
+  firstSdkMsgMs: number
+  firstChunkMs: number
+  totalMs: number
+  chunks: number
+  assistantTurns: number
+  result: SDKResultMessage | null
+}): void {
+  const usage = (args.result && 'usage' in args.result ? args.result.usage : null) as
+    | Record<string, unknown>
+    | null
+  const cacheRead = Number(usage?.cache_read_input_tokens ?? 0)
+  const cacheWrite = Number(usage?.cache_creation_input_tokens ?? 0)
+  const inputTokens = Number(usage?.input_tokens ?? 0)
+  const outputTokens = Number(usage?.output_tokens ?? 0)
+  const totalInput = inputTokens + cacheRead + cacheWrite
+  const cacheHitPct = totalInput > 0 ? Math.round((cacheRead / totalInput) * 100) : 0
+  debugLog(
+    `[chat] done id=${args.requestId} pool_hit=${args.poolHit} ` +
+      `send=${args.sendMs.toFixed(0)}ms ` +
+      `first_sdk_msg=${args.firstSdkMsgMs.toFixed(0)}ms ` +
+      `first_chunk=${args.firstChunkMs.toFixed(0)}ms ` +
+      `total=${args.totalMs.toFixed(0)}ms ` +
+      `turns=${args.assistantTurns} chunks=${args.chunks} ` +
+      `tokens=${inputTokens}+${cacheRead}r+${cacheWrite}w/${outputTokens} ` +
+      `cache_hit=${cacheHitPct}%`,
+  )
 }
 
 /**
