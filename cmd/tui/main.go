@@ -46,10 +46,13 @@ func main() {
 
 	// Critical: lipgloss probes stdout for colour support, but our stdout
 	// is the NDJSON IPC pipe (not a TTY) so it would silently downgrade
-	// to plain text. Re-probe via /dev/tty and lock the profile in. This
-	// is what makes any chip / glyph actually paint colour.
-	ttyOutput := termenv.NewOutput(tty)
-	lipgloss.SetColorProfile(ttyOutput.Profile)
+	// to plain text. Probing /dev/tty itself via termenv.NewOutput().Profile
+	// would deadlock because that method writes OSC queries and waits for
+	// the tty to echo a response — bubbletea is already reading the same
+	// tty for keystrokes and eats the response. Read the user's terminal
+	// capability from env vars instead (COLORTERM / TERM); this is purely
+	// a string read, no I/O.
+	lipgloss.SetColorProfile(termenv.EnvColorProfile())
 
 	model := newModel(os.Stdout)
 	prog := tea.NewProgram(
