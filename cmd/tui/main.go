@@ -161,19 +161,25 @@ type model struct {
 
 const popupMaxRows = 6
 
-// Palette — adaptive so light terminals don't lose contrast. Use these
-// instead of raw lipgloss.Color codes for any text that the user reads as
-// foreground (sep glyphs, hints, labels). Backgrounds stay raw codes
-// because the chips paint a fixed-dark surface.
+// Palette — assumes a dark terminal (the common case for this tool). Use
+// these instead of raw lipgloss.Color codes anywhere foreground text is set.
+// Light-terminal users will see the same hues just with lower contrast;
+// future revisit can swap these to AdaptiveColor.
 var (
-	colPrimary   lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "16", Dark: "252"}
-	colSecondary lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "238", Dark: "245"}
-	colMuted     lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "243", Dark: "240"}
-	colAccent    lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "166", Dark: "208"} // Anthropic-ish orange
-	colDanger    lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
-	colSuccess   lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "28", Dark: "78"}
-	colWarning   lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "172", Dark: "214"}
-	colHighlight lipgloss.TerminalColor = lipgloss.AdaptiveColor{Light: "55", Dark: "213"}
+	colPrimary   lipgloss.TerminalColor = lipgloss.Color("254") // crisp white
+	colSecondary lipgloss.TerminalColor = lipgloss.Color("250") // soft white
+	colMuted     lipgloss.TerminalColor = lipgloss.Color("244") // mid grey
+	colAccent    lipgloss.TerminalColor = lipgloss.Color("214") // saturated amber
+	colDanger    lipgloss.TerminalColor = lipgloss.Color("203")
+	colSuccess   lipgloss.TerminalColor = lipgloss.Color("84")  // bright green
+	colWarning   lipgloss.TerminalColor = lipgloss.Color("220")
+	colHighlight lipgloss.TerminalColor = lipgloss.Color("213") // hot pink
+	colCyan      lipgloss.TerminalColor = lipgloss.Color("87")  // bright cyan
+	colViolet    lipgloss.TerminalColor = lipgloss.Color("141")
+
+	// Background bar shared by both status lines so the chips visually
+	// lift off the transcript instead of floating on the terminal default.
+	statusBarBG = lipgloss.Color("234")
 )
 
 type toolEntry struct {
@@ -215,7 +221,8 @@ func newModel(uiOut io.Writer) *model {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 
 	r, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle("dark"), // force dark palette so colours actually pop
+		glamour.WithEmoji(),
 		glamour.WithWordWrap(0),
 	)
 
@@ -904,7 +911,8 @@ func (m *model) layout() {
 	if m.mdRenderer != nil {
 		// Re-init renderer with the current width so word wrap matches.
 		if r, err := glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
+			glamour.WithStandardStyle("dark"), // force dark palette so colours actually pop
+		glamour.WithEmoji(),
 			glamour.WithWordWrap(m.w-2),
 		); err == nil {
 			m.mdRenderer = r
@@ -989,13 +997,26 @@ func (m *model) refreshHeader() {
 }
 
 func (m *model) refreshStatusLines() {
-	m.statusLine1 = m.buildStatusLine1()
-	m.statusLine2 = m.buildStatusLine2()
+	m.statusLine1 = m.wrapStatusBar(m.buildStatusLine1())
+	m.statusLine2 = m.wrapStatusBar(m.buildStatusLine2())
+}
+
+// wrapStatusBar paints a continuous dark bar across the full terminal width
+// behind the status content, so even narrow chips read as part of one
+// status row instead of floating in the void.
+func (m *model) wrapStatusBar(content string) string {
+	if content == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().
+		Background(statusBarBG).
+		Width(m.w).
+		Render(content)
 }
 
 // buildStatusLine1: brand badge | model badge | short cwd + branch | session elapsed
 func (m *model) buildStatusLine1() string {
-	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" │ ")
+	sep := lipgloss.NewStyle().Background(statusBarBG).Foreground(colMuted).Render(" │ ")
 
 	brand := lipgloss.NewStyle().
 		Background(lipgloss.Color("202")). // Anthropic-ish orange
@@ -1016,24 +1037,26 @@ func (m *model) buildStatusLine1() string {
 	}
 
 	if m.cwd != "" {
-		text := shortCwd(m.cwd)
+		base := lipgloss.NewStyle().Background(statusBarBG)
+		text := base.Foreground(colCyan).Bold(true).Render(shortCwd(m.cwd))
 		if m.branch != "" {
 			marker := ""
 			if m.branchDirty {
-				marker = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Render("*")
+				marker = base.Foreground(colDanger).Render("*")
 			}
-			text += " " + lipgloss.NewStyle().Foreground(colSecondary).Render("git:(") +
-				lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(m.branch) +
+			text += " " + base.Foreground(colSecondary).Render("git:(") +
+				base.Foreground(colWarning).Bold(true).Render(m.branch) +
 				marker +
-				lipgloss.NewStyle().Foreground(colSecondary).Render(")")
+				base.Foreground(colSecondary).Render(")")
 		}
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(text))
+		parts = append(parts, text)
 	}
 
 	if !m.sessionStartedAt.IsZero() {
 		elapsed := time.Since(m.sessionStartedAt)
 		parts = append(parts, lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
+			Background(statusBarBG).
+			Foreground(colSecondary).
 			Render("⏱  "+formatDuration(elapsed)))
 	}
 
@@ -1045,7 +1068,7 @@ func (m *model) buildStatusLine1() string {
 
 // buildStatusLine2: Context bar % | Cost | Compacts
 func (m *model) buildStatusLine2() string {
-	sep := lipgloss.NewStyle().Foreground(colMuted).Render(" │ ")
+	sep := lipgloss.NewStyle().Background(statusBarBG).Foreground(colMuted).Render(" │ ")
 	parts := []string{}
 
 	if m.context > 0 || m.contextMax > 0 {
@@ -1241,7 +1264,7 @@ func renderProgressBar(pct float64, width int, color lipgloss.Color) string {
 }
 
 func (m *model) refreshFooter() {
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	dim := lipgloss.NewStyle().Foreground(colMuted)
 	hint := dim.Render("Enter send · Ctrl+J newline · /help · Ctrl+C exit")
 	if m.state == stateBusy {
 		elapsed := ""
@@ -1251,7 +1274,7 @@ func (m *model) refreshFooter() {
 				Render(formatDuration(d))
 		}
 		hint = m.spin.View() + " " +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render("thinking…") +
+			lipgloss.NewStyle().Foreground(colAccent).Bold(true).Render("thinking…") +
 			elapsed +
 			dim.Render("  ·  Ctrl+C cancels")
 	}

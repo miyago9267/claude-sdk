@@ -28,7 +28,7 @@ import {
 import { ContextManager } from '../context-manager.ts'
 import type { ParsedArgs } from './args.ts'
 import { buildSessionOptions } from './session-options.ts'
-import { discoverCommands, discoverSkills, formatList } from './discover.ts'
+import { discoverCommands, discoverSkills, discoverAgents, formatList } from './discover.ts'
 import { safeCloseSession } from './safe-close.ts'
 import { resolveModel, formatKnownModels, KNOWN_MODELS } from './models.ts'
 import { readGitBranch, readGitDirty } from './git-info.ts'
@@ -138,6 +138,7 @@ const TS_BUILTIN_COMMANDS: BuiltinCmd[] = [
   { name: '/commands', source: 'built-in', description: 'list installed slash commands' },
   { name: '/skills', source: 'built-in', description: 'list installed skills' },
   { name: '/sessions', source: 'built-in', description: 'pick a session to resume (local + official)' },
+  { name: '/agents', source: 'built-in', description: 'pick an agent to inspect or invoke' },
   { name: '/exit', source: 'built-in', description: 'leave the TUI' },
   { name: '/quit', source: 'built-in', description: 'leave the TUI' },
 ]
@@ -590,6 +591,41 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         return
       }
 
+      case '/agents': {
+        const cwd = sessionOptions.cwd ?? process.cwd()
+        const agents = discoverAgents({ cwd })
+        if (agents.length === 0) {
+          sendToTui({ type: 'status', message: 'no agents discovered (~/.claude/agents/, .claude/agents/, plugins/*/agents/)' })
+          return
+        }
+        const result = await askUser({
+          kind: 'select',
+          question: 'Pick an agent',
+          hint: `${agents.length} agents discovered`,
+          options: agents.map((a) => ({
+            value: a.name,
+            label: a.name,
+            hint: `[${a.source}] ${truncate(a.description ?? '', 70)}`,
+          })),
+        })
+        if (result.cancelled || !result.value) {
+          sendToTui({ type: 'status', message: 'agent pick cancelled' })
+          return
+        }
+        const picked = agents.find((a) => a.name === result.value)
+        if (!picked) return
+        sendToTui({
+          type: 'status',
+          message:
+            `agent: ${picked.name}\n` +
+            `source: ${picked.source}\n` +
+            `path:   ${picked.path}\n\n` +
+            `${picked.description ?? '(no description)'}\n\n` +
+            `Send "@${picked.name} <task>" or just describe the work — Claude routes to it automatically.`,
+        })
+        return
+      }
+
       case '/sessions': {
         if (!store) {
           sendToTui({ type: 'error', message: 'session store unavailable' })
@@ -827,6 +863,10 @@ function forwardToolUse(
     name,
     input: summariseToolInput(name, input),
   })
+}
+
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + '…'
 }
 
 function formatRelativeTs(unixSec: number): string {

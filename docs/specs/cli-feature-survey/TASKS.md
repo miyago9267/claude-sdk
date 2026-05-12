@@ -53,7 +53,8 @@
 - [x] D.2 IPC: `EvtAsk` + `AskRequest` payload, `UIAnswer` event, schema synced both sides
 - [x] D.3 TS host: `askUser(req): Promise<AskResult>`, `pendingAsks` map, answer routing
 - [x] D.4 First caller: `/sessions` lists local + official sessions, picker → resume
-- [ ] D.5 `/agents` picker
+- [x] D.5 `/agents` picker — discover.ts gains discoverAgents, /agents shows description + usage hint
+- [x] colour pass — saturated palette + status bar background
 - [ ] D.6 canUseTool (plan-mode-like confirm) when permission mode != bypassPermissions
 - [ ] D.7 MCP elicitation接通（V2 SDKSessionOptions 沒 onElicitation，需繞道）
 - [ ] D.8 picker.kind='text' 真正能輸入（目前佔位）

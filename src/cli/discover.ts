@@ -22,6 +22,13 @@ export interface SkillEntry {
   description?: string
 }
 
+export interface AgentEntry {
+  name: string
+  source: 'project' | 'user' | 'plugin'
+  path: string
+  description?: string
+}
+
 export interface DiscoverOptions {
   cwd: string
   /** Override $HOME — useful for tests. Default: os.homedir(). */
@@ -44,6 +51,46 @@ export function discoverSkills(opts: DiscoverOptions): SkillEntry[] {
   scanSkillsDir(join(home, '.claude', 'skills'), 'user', out)
   scanPluginsSkillDirs(join(home, '.claude', 'plugins'), out)
   return dedupeByName(out)
+}
+
+export function discoverAgents(opts: DiscoverOptions): AgentEntry[] {
+  const home = opts.home ?? homedir()
+  const out: AgentEntry[] = []
+  scanAgentsDir(join(opts.cwd, '.claude', 'agents'), 'project', out)
+  scanAgentsDir(join(home, '.claude', 'agents'), 'user', out)
+  scanPluginsAgentDirs(join(home, '.claude', 'plugins'), out)
+  return dedupeByName(out)
+}
+
+function scanAgentsDir(dir: string, source: AgentEntry['source'], out: AgentEntry[]): void {
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.md')) continue
+    const path = join(dir, name)
+    out.push({
+      name: name.replace(/\.md$/, ''),
+      source,
+      path,
+      description: readFrontmatterDescription(path),
+    })
+  }
+}
+
+function scanPluginsAgentDirs(pluginsRoot: string, out: AgentEntry[]): void {
+  let plugins: string[]
+  try {
+    plugins = readdirSync(pluginsRoot)
+  } catch {
+    return
+  }
+  for (const plugin of plugins) {
+    scanAgentsDir(join(pluginsRoot, plugin, 'agents'), 'plugin', out)
+  }
 }
 
 function scanCommandsDir(dir: string, source: SlashCommand['source'], out: SlashCommand[]): void {
