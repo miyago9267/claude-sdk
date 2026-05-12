@@ -75,7 +75,26 @@ const (
 	EvtToolProgress = "tool-progress" // existing tool's elapsed seconds tick
 	EvtMcpCall      = "mcp-call"      // tool_use whose name is mcp__<srv>__<tool>
 	EvtSkillCall    = "skill-call"    // tool_use whose name is Skill (built-in dispatcher)
+
+	// Phase D — interactive ask: TS host pushes a picker request, expects
+	// a UI answer back. Payload is JSON-encoded AskRequest.
+	EvtAsk = "ask"
 )
+
+// AskRequest payload for EvtAsk. JSON-encoded into HostEvent.Payload.
+type AskRequest struct {
+	ID       string       `json:"id"`
+	Kind     string       `json:"kind"` // select | confirm | text (text reserved)
+	Question string       `json:"question"`
+	Hint     string       `json:"hint,omitempty"`
+	Options  []AskOption  `json:"options,omitempty"`
+}
+
+type AskOption struct {
+	Value string `json:"value"`
+	Label string `json:"label,omitempty"`
+	Hint  string `json:"hint,omitempty"`
+}
 
 // Capabilities is the parsed payload of an EvtCapabilities event.
 type Capabilities struct {
@@ -99,15 +118,19 @@ type ArgOption struct {
 
 // UIEvent is anything we send back to the TS host (typed user actions).
 type UIEvent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-	Cmd  string `json:"cmd,omitempty"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Cmd       string `json:"cmd,omitempty"`
+	AskID     string `json:"askId,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
 }
 
 const (
 	UIPrompt = "prompt" // user submitted a prompt line
 	UISlash  = "slash"  // user typed /command
 	UIExit   = "exit"   // user requested exit
+	UIAnswer = "answer" // user answered an ask request
 )
 
 type writer struct {

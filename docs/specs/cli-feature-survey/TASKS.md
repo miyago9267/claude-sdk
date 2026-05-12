@@ -47,6 +47,17 @@
 - [ ] 手測：跑 `Edit *.md` 觸發 `markdown-lint-fix.sh` 應看到 `⚙ hook PostToolUse`
 - [ ] 手測：用 `Task` tool 跑 sub-agent 應看到 task 進度
 
+## Phase D — Interactive pickers
+
+- [x] D.1 Picker primitive (Go): `pickerState`, `picker.go` view + filter, `handlePickerKey`
+- [x] D.2 IPC: `EvtAsk` + `AskRequest` payload, `UIAnswer` event, schema synced both sides
+- [x] D.3 TS host: `askUser(req): Promise<AskResult>`, `pendingAsks` map, answer routing
+- [x] D.4 First caller: `/sessions` lists local + official sessions, picker → resume
+- [ ] D.5 `/agents` picker
+- [ ] D.6 canUseTool (plan-mode-like confirm) when permission mode != bypassPermissions
+- [ ] D.7 MCP elicitation接通（V2 SDKSessionOptions 沒 onElicitation，需繞道）
+- [ ] D.8 picker.kind='text' 真正能輸入（目前佔位）
+
 ## 後續批次（暫不展開）
 
 - HIGH 1: `/cost`

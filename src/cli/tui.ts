@@ -59,6 +59,7 @@ interface HostEvent {
     | 'busy'
     | 'thinking'
     | 'capabilities'
+    | 'ask'
   text?: string
   model?: string
   cwd?: string
@@ -136,14 +137,36 @@ const TS_BUILTIN_COMMANDS: BuiltinCmd[] = [
   { name: '/status', source: 'built-in', description: 'session id, cwd, context tokens, cost' },
   { name: '/commands', source: 'built-in', description: 'list installed slash commands' },
   { name: '/skills', source: 'built-in', description: 'list installed skills' },
+  { name: '/sessions', source: 'built-in', description: 'pick a session to resume (local + official)' },
   { name: '/exit', source: 'built-in', description: 'leave the TUI' },
   { name: '/quit', source: 'built-in', description: 'leave the TUI' },
 ]
 
 interface UIEvent {
-  type: 'prompt' | 'slash' | 'exit'
+  type: 'prompt' | 'slash' | 'exit' | 'answer'
   text?: string
   cmd?: string
+  askId?: string
+  value?: string
+  cancelled?: boolean
+}
+
+interface AskOption {
+  value: string
+  label?: string
+  hint?: string
+}
+
+interface AskRequest {
+  kind: 'select' | 'confirm' | 'text'
+  question: string
+  hint?: string
+  options?: AskOption[]
+}
+
+interface AskResult {
+  cancelled: boolean
+  value?: string
 }
 
 export async function runTui(opts: TuiOptions): Promise<void> {
@@ -201,6 +224,20 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     hostOut.write(JSON.stringify(ev) + '\n')
     debug?.write(`[->tui] ${ev.type} ${ev.text ? JSON.stringify(ev.text.slice(0, 80)) : ''}\n`)
   }
+
+  // askUser pushes an EvtAsk to the TUI and resolves once the matching
+  // 'answer' UIEvent arrives. The picker handles all the keyboard UX.
+  const pendingAsks = new Map<string, (r: AskResult) => void>()
+  let askCounter = 0
+  const askUser = (req: AskRequest): Promise<AskResult> =>
+    new Promise((resolveAsk) => {
+      const id = `ask-${++askCounter}-${Date.now()}`
+      pendingAsks.set(id, resolveAsk)
+      sendToTui({
+        type: 'ask',
+        payload: JSON.stringify({ id, ...req }),
+      })
+    })
 
   const log = (line: string) => sendToTui({ type: 'status', message: line })
 
@@ -297,6 +334,15 @@ export async function runTui(opts: TuiOptions): Promise<void> {
   async function handleUIEvent(ev: UIEvent): Promise<void> {
     if (ev.type === 'exit') {
       child.kill()
+      return
+    }
+    if (ev.type === 'answer') {
+      const id = ev.askId ?? ''
+      const resolver = pendingAsks.get(id)
+      if (resolver) {
+        pendingAsks.delete(id)
+        resolver({ cancelled: ev.cancelled === true, value: ev.value })
+      }
       return
     }
     if (ev.type === 'slash') {
@@ -544,6 +590,79 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         return
       }
 
+      case '/sessions': {
+        if (!store) {
+          sendToTui({ type: 'error', message: 'session store unavailable' })
+          return
+        }
+        const cwd = sessionOptions.cwd ?? process.cwd()
+        const localSessions = store.list()
+        const officialMod = await import('./official-session.ts')
+        const official = new officialMod.OfficialResolver()
+        const officialMeta = official.findLatestByCwd(cwd)
+        const officialAll = officialMeta ? [officialMeta] : []
+        const seenIds = new Set(localSessions.map((s) => s.id))
+        const merged = [
+          ...localSessions
+            .filter((s) => s.cwd === cwd)
+            .sort((a, b) => b.lastUsedAt - a.lastUsedAt)
+            .map((s) => ({
+              value: s.id,
+              label: `${s.id.slice(0, 8)} · ${s.turnCount} turns · ${formatRelativeTs(s.lastUsedAt)}`,
+              hint: `local · ${s.model}`,
+            })),
+          ...officialAll
+            .filter((m) => !seenIds.has(m.id))
+            .map((m) => ({
+              value: `official:${m.id}`,
+              label: `${m.id.slice(0, 8)} · ${m.turnCount} turns · ${formatRelativeTs(m.lastUsedAt)}`,
+              hint: `official · ${m.model ?? '?'}`,
+            })),
+        ]
+        if (merged.length === 0) {
+          sendToTui({ type: 'status', message: 'no sessions found in this cwd' })
+          return
+        }
+        const result = await askUser({
+          kind: 'select',
+          question: 'Resume which session?',
+          hint: `cwd: ${cwd}`,
+          options: merged,
+        })
+        if (result.cancelled || !result.value) {
+          sendToTui({ type: 'status', message: 'session pick cancelled' })
+          return
+        }
+        // Resolve the chosen id (handle 'official:' prefix for unimported entries)
+        let chosenId = result.value
+        if (chosenId.startsWith('official:')) {
+          const officialId = chosenId.slice('official:'.length)
+          const meta = official.findById(officialId)
+          if (meta) {
+            const local = store.create({
+              cwd: meta.cwd || cwd,
+              model: meta.model ?? sessionOptions.model,
+              id: meta.id,
+            })
+            store.importRawTurns(meta.id, official.loadTurns(meta.jsonlPath))
+            chosenId = local.id
+          }
+        }
+        await safeCloseSession(session)
+        session = unstable_v2_createSession(sessionOptions)
+        sessionId = null
+        logicalId = chosenId
+        pendingPrefix = store.formatHistoryPrefix(chosenId)
+        store.touch(chosenId)
+        resetSessionCostTracking()
+        sendBanner()
+        sendToTui({
+          type: 'status',
+          message: `resumed session ${chosenId} · history prefix queued for next prompt`,
+        })
+        return
+      }
+
       case '/self': {
         const root = resolveSelfRoot()
         const dirs = sessionOptions.additionalDirectories ?? []
@@ -708,6 +827,14 @@ function forwardToolUse(
     name,
     input: summariseToolInput(name, input),
   })
+}
+
+function formatRelativeTs(unixSec: number): string {
+  const diff = Math.floor(Date.now() / 1000) - unixSec
+  if (diff < 60) return `${diff}s ago`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
 }
 
 function extractContextWindow(r: SDKResultMessage): number | undefined {

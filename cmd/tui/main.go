@@ -148,6 +148,10 @@ type model struct {
 	welcomeFrame    int       // 0..2 during fade-in, then 3 = settled
 	inputFlashUntil time.Time // input box border tinted green until this moment
 
+	// Modal picker (active = non-nil). Takes over key handling and overlays
+	// itself in View() above the input box.
+	picker *pickerState
+
 	vp    viewport.Model
 	input textarea.Model
 	spin  spinner.Model
@@ -318,6 +322,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyHostEvent(msg.ev)
 
 	case tea.KeyMsg:
+		// When a modal picker is open it monopolises the keyboard. Ctrl+C
+		// still exits the whole TUI, but everything else is routed to the
+		// picker (arrows, Enter, Esc, type-to-filter).
+		if m.picker != nil {
+			return m.handlePickerKey(msg)
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyCtrlD:
 			m.out.send(UIEvent{Type: UIExit})
@@ -687,6 +697,21 @@ func (m *model) applyHostEvent(ev HostEvent) (tea.Model, tea.Cmd) {
 			m.allCommands = caps.Commands
 			m.skills = caps.Skills
 		}
+	case EvtAsk:
+		var req AskRequest
+		if err := json.Unmarshal([]byte(ev.Payload), &req); err != nil {
+			m.appendLine(lipgloss.NewStyle().Foreground(colDanger).
+				Render("[ask] malformed payload: " + err.Error()))
+			return m, nil
+		}
+		m.picker = &pickerState{
+			id:       req.ID,
+			kind:     req.Kind,
+			question: req.Question,
+			hint:     req.Hint,
+			options:  req.Options,
+		}
+		m.layout()
 	case "__eof__":
 		return m, tea.Quit
 	}
@@ -701,7 +726,9 @@ func (m *model) View() string {
 		return ""
 	}
 	parts := []string{m.vp.View()}
-	if popup := m.suggestionsView(); popup != "" {
+	if m.picker != nil {
+		parts = append(parts, m.picker.view(m.w))
+	} else if popup := m.suggestionsView(); popup != "" {
 		parts = append(parts, popup)
 	}
 	parts = append(parts, m.inputBox())
@@ -713,6 +740,54 @@ func (m *model) View() string {
 	}
 	parts = append(parts, m.footer)
 	return strings.Join(parts, "\n")
+}
+
+// handlePickerKey is called only when m.picker != nil.
+func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		m.out.send(UIEvent{Type: UIExit})
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.out.send(UIEvent{Type: UIAnswer, AskID: m.picker.id, Cancelled: true})
+		m.picker = nil
+		m.layout()
+		return m, nil
+	case tea.KeyUp:
+		if m.picker.idx > 0 {
+			m.picker.idx--
+		}
+		return m, nil
+	case tea.KeyDown:
+		visible := m.picker.visibleOptions()
+		if m.picker.idx < len(visible)-1 {
+			m.picker.idx++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		if opt, ok := m.picker.selected(); ok {
+			m.out.send(UIEvent{Type: UIAnswer, AskID: m.picker.id, Value: opt.Value})
+			m.picker = nil
+			m.layout()
+		}
+		return m, nil
+	case tea.KeyBackspace:
+		if len(m.picker.filter) > 0 {
+			m.picker.filter = m.picker.filter[:len(m.picker.filter)-1]
+			m.picker.idx = 0
+		}
+		return m, nil
+	default:
+		// Type-to-filter — append printable runes only.
+		if len(msg.Runes) > 0 {
+			r := msg.Runes[0]
+			if r >= 32 && r != 127 {
+				m.picker.filter += string(msg.Runes)
+				m.picker.idx = 0
+			}
+		}
+		return m, nil
+	}
 }
 
 func (m *model) inputBox() string {
@@ -801,15 +876,19 @@ func (m *model) layout() {
 		statusH = 2
 	}
 	inputH := m.input.Height() + 2
-	popupH := 0
-	if n := len(m.suggestList); n > 0 {
+	overlayH := 0
+	if m.picker != nil {
+		// Picker takes priority over the slash popup. Reserve up to 12
+		// rows; the picker view itself adapts to content.
+		overlayH = pickerHeight(m.picker)
+	} else if n := len(m.suggestList); n > 0 {
 		if n > popupMaxRows {
 			n = popupMaxRows
 		}
 		// rows + separator + preview + 2 border lines
-		popupH = n + 2 + 2
+		overlayH = n + 2 + 2
 	}
-	vpH := m.h - footerH - statusH - inputH - popupH - 1
+	vpH := m.h - footerH - statusH - inputH - overlayH - 1
 	if vpH < 3 {
 		vpH = 3
 	}

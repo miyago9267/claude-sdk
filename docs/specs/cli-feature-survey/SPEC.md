@@ -323,6 +323,55 @@ User 指定的下一波目標：把「目前 cli.js 內部跑了什麼」攤到 
 
 這樣 IPC 數量不爆，TS 端只在 forward 時做 routing。
 
+## Section 4 — Phase D: Interactive Pickers
+
+User 指定的下一波目標：把官方 cli.js 那種「請選 A/B/C」的決策互動拉到我們
+TUI 上 — plan mode、permission prompt、resume picker、elicitation 等。
+
+### 4.1 Picker primitive
+
+通用 modal selector，所有「需要 user 從一組選項挑一個」的場景都用它：
+
+- IPC：`EvtAsk` (HostEvent) payload = `AskRequest{ id, kind, question, hint?, options[] }`
+  反向 `UIAnswer` (UIEvent) = `{ askId, value, cancelled }`
+- Go 端 `pickerState` 接管 keyboard，View 時覆蓋 viewport 與 popup
+  - ↑/↓ 選 · 任意字 type-to-filter · Enter accept · Esc cancel · Ctrl+C exit
+- TS 端 `askUser(req): Promise<AskResult>` 包 sendToTui + Map<askId, resolve>
+
+### 4.2 First use case — `/sessions`
+
+Slash command 列當前 cwd 內的 local + official sessions（去重 by id），按
+`lastUsedAt` 排序，picker 選一個 → 自動 import 進 local store（如果是 official-only）
+→ restart V2 session + queue history prefix。等同於 GUI 版的 `claude -c`。
+
+### 4.3 後續 picker 接點
+
+| Use case | Trigger | Picker shape |
+|---|---|---|
+| `/agents` | slash | select from discovered agents |
+| `/permissions` | slash | confirm allow/deny rules |
+| `canUseTool` (plan mode) | SDK callback | confirm tool execution per call |
+| MCP elicitation | `onElicitation` callback | form (text input) — picker.kind='text' |
+
+V2 SDKSessionOptions 目前**沒** `onElicitation`（只在 query Options 上），
+所以 elicitation 接通需要等 SDK 補或我們繞道（攔 SDK_system events）。
+canUseTool 也需要 user 切離 `bypassPermissions` 模式才會被觸發。先做手動
+觸發的（`/sessions`、未來 `/agents`）。
+
+### ADR-7: Picker primitive 為共享元件，不為單一 caller 客製
+
+**Decision**：`pickerState` + `EvtAsk` + `UIAnswer` 是共用層，所有 caller
+（自家 slash command / SDK callback）走同個 IPC 形狀。Go 不知道 caller 是誰，
+TS 用 askId 路由 resolve。
+
+**Rationale**：避免每個新 callsite 在 TUI 重做選擇器。schema 簡單到
+JSON-encoded payload 一個 string field 就涵蓋所有變體。
+
+### ADR-8: Picker 的 text 模式留待真正有 caller 才實作
+
+`AskRequest.kind = 'text'` 已預留但 picker 尚未 render textarea。第一個
+text caller 出現時再加（很可能是 elicitation form 模式）。
+
 ## Out of Scope
 
 - 重做 cli.js 任何核心功能（permission system、tool dispatcher、hook engine）
