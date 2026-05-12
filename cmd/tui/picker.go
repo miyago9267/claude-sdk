@@ -79,43 +79,61 @@ func (p *pickerState) view(width int) string {
 		Bold(true)
 	subStyle := lipgloss.NewStyle().Foreground(colSecondary)
 
-	visible := p.visibleOptions()
-	rows := make([]string, 0, len(visible)+4)
+	rows := make([]string, 0, 16)
 	rows = append(rows, titleStyle.Render(" "+p.kindLabel()+" "))
 	rows = append(rows, lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render(p.question))
 	if p.hint != "" {
 		rows = append(rows, hintStyle.Render(p.hint))
 	}
-	if p.filter != "" {
-		rows = append(rows, hintStyle.Render("filter: "+p.filter+"_"))
-	}
 	rows = append(rows, "")
 
-	if len(visible) == 0 {
-		rows = append(rows, subStyle.Render("(no matches — Esc to cancel)"))
+	if p.kind == "text" {
+		// Free-form input: filter doubles as the text buffer.
+		inputStyle := lipgloss.NewStyle().
+			Background(lipgloss.Color("236")).
+			Foreground(colPrimary).
+			Padding(0, 1).
+			Width(w - 6)
+		buf := p.filter
+		if buf == "" {
+			buf = lipgloss.NewStyle().Foreground(colMuted).Italic(true).Render("(type your answer…)")
+		} else {
+			buf = buf + lipgloss.NewStyle().Foreground(colHighlight).Bold(true).Render("│")
+		}
+		rows = append(rows, inputStyle.Render(buf))
+		rows = append(rows, "")
+		rows = append(rows, hintStyle.Render("Enter accept · Esc cancel · Backspace deletes"))
 	} else {
-		for i, opt := range visible {
-			label := opt.Label
-			if label == "" {
-				label = opt.Value
-			}
-			line := "  " + label
-			if opt.Hint != "" {
-				line += subStyle.Render("  " + opt.Hint)
-			}
-			if i == p.idx {
-				line = selectedStyle.Width(w - 2).Render("▸ " + label)
+		if p.filter != "" {
+			rows = append(rows, hintStyle.Render("filter: "+p.filter+"_"))
+		}
+		visible := p.visibleOptions()
+		if len(visible) == 0 {
+			rows = append(rows, subStyle.Render("(no matches — Esc to cancel)"))
+		} else {
+			for i, opt := range visible {
+				label := opt.Label
+				if label == "" {
+					label = opt.Value
+				}
+				line := "  " + label
 				if opt.Hint != "" {
 					line += subStyle.Render("  " + opt.Hint)
 				}
-			} else {
-				line = itemStyle.Render(line)
+				if i == p.idx {
+					line = selectedStyle.Width(w - 2).Render("▸ " + label)
+					if opt.Hint != "" {
+						line += subStyle.Render("  " + opt.Hint)
+					}
+				} else {
+					line = itemStyle.Render(line)
+				}
+				rows = append(rows, line)
 			}
-			rows = append(rows, line)
 		}
+		rows = append(rows, "")
+		rows = append(rows, hintStyle.Render("↑/↓ select · type to filter · Enter accept · Esc cancel"))
 	}
-	rows = append(rows, "")
-	rows = append(rows, hintStyle.Render("↑/↓ select · type to filter · Enter accept · Esc cancel"))
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -126,8 +144,7 @@ func (p *pickerState) view(width int) string {
 }
 
 // pickerHeight estimates the rendered height so layout can reserve space.
-// title + question + (hint?) + (filter?) + blank + N items (cap 8) + blank + footer
-// + 2 border lines.
+// title + question + (hint?) + blank + body + blank + footer + 2 border lines.
 func pickerHeight(p *pickerState) int {
 	if p == nil {
 		return 0
@@ -136,18 +153,22 @@ func pickerHeight(p *pickerState) int {
 	if p.hint != "" {
 		rows++
 	}
-	if p.filter != "" {
-		rows++
-	}
-	visible := p.visibleOptions()
-	count := len(visible)
-	if count == 0 {
-		rows++
+	if p.kind == "text" {
+		rows += 2 // input row + trailing blank
 	} else {
-		if count > 8 {
-			count = 8
+		if p.filter != "" {
+			rows++
 		}
-		rows += count
+		visible := p.visibleOptions()
+		count := len(visible)
+		if count == 0 {
+			rows++
+		} else {
+			if count > 8 {
+				count = 8
+			}
+			rows += count
+		}
 	}
 	return rows + 2 // border
 }

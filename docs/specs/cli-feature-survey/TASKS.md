@@ -55,9 +55,9 @@
 - [x] D.4 First caller: `/sessions` lists local + official sessions, picker → resume
 - [x] D.5 `/agents` picker — discover.ts gains discoverAgents, /agents shows description + usage hint
 - [x] colour pass — saturated palette + status bar background
-- [ ] D.6 canUseTool (plan-mode-like confirm) when permission mode != bypassPermissions
+- [x] D.6 canUseTool plan-mode confirm — late-bound askUserRef + /pm slash command to switch permissionMode
 - [ ] D.7 MCP elicitation接通（V2 SDKSessionOptions 沒 onElicitation，需繞道）
-- [ ] D.8 picker.kind='text' 真正能輸入（目前佔位）
+- [x] D.8 picker.kind='text' 真正能輸入（free-form 答案；demo: /ask）
 
 ## 後續批次（暫不展開）
 

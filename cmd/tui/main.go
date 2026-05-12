@@ -781,17 +781,26 @@ func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m, nil
 	case tea.KeyUp:
-		if m.picker.idx > 0 {
+		if m.picker.kind != "text" && m.picker.idx > 0 {
 			m.picker.idx--
 		}
 		return m, nil
 	case tea.KeyDown:
-		visible := m.picker.visibleOptions()
-		if m.picker.idx < len(visible)-1 {
-			m.picker.idx++
+		if m.picker.kind != "text" {
+			visible := m.picker.visibleOptions()
+			if m.picker.idx < len(visible)-1 {
+				m.picker.idx++
+			}
 		}
 		return m, nil
 	case tea.KeyEnter:
+		if m.picker.kind == "text" {
+			// In text mode the filter buffer is the answer.
+			m.out.send(UIEvent{Type: UIAnswer, AskID: m.picker.id, Value: m.picker.filter})
+			m.picker = nil
+			m.layout()
+			return m, nil
+		}
 		if opt, ok := m.picker.selected(); ok {
 			m.out.send(UIEvent{Type: UIAnswer, AskID: m.picker.id, Value: opt.Value})
 			m.picker = nil
@@ -800,12 +809,15 @@ func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyBackspace:
 		if len(m.picker.filter) > 0 {
-			m.picker.filter = m.picker.filter[:len(m.picker.filter)-1]
+			// Remove the last rune (not the last byte) so UTF-8 input
+			// shrinks one character at a time.
+			runes := []rune(m.picker.filter)
+			m.picker.filter = string(runes[:len(runes)-1])
 			m.picker.idx = 0
 		}
 		return m, nil
 	default:
-		// Type-to-filter — append printable runes only.
+		// Type-to-filter (select) or type-to-input (text).
 		if len(msg.Runes) > 0 {
 			r := msg.Runes[0]
 			if r >= 32 && r != 127 {

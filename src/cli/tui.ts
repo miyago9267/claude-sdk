@@ -139,6 +139,23 @@ const TS_BUILTIN_COMMANDS: BuiltinCmd[] = [
   { name: '/skills', source: 'built-in', description: 'list installed skills' },
   { name: '/sessions', source: 'built-in', description: 'pick a session to resume (local + official)' },
   { name: '/agents', source: 'built-in', description: 'pick an agent to inspect or invoke' },
+  {
+    name: '/pm',
+    source: 'built-in',
+    description: 'switch permission mode (plan-style confirm via picker)',
+    args: [
+      { name: 'bypassPermissions', description: 'no prompts (current default)' },
+      { name: 'default', description: 'prompt for dangerous ops' },
+      { name: 'acceptEdits', description: 'auto-accept edits, prompt for the rest' },
+      { name: 'plan', description: 'planning mode, no actual tool execution' },
+      { name: 'dontAsk', description: 'deny anything not pre-approved' },
+    ],
+  },
+  {
+    name: '/ask',
+    source: 'built-in',
+    description: 'demo the text-input picker (free-form answer)',
+  },
   { name: '/exit', source: 'built-in', description: 'leave the TUI' },
   { name: '/quit', source: 'built-in', description: 'leave the TUI' },
 ]
@@ -180,7 +197,42 @@ export async function runTui(opts: TuiOptions): Promise<void> {
     process.exit(2)
   }
 
-  let sessionOptions = buildSessionOptions({ args: opts.args })
+  // canUseTool is wired through a late-bound askUserRef so we can put the
+  // session and the askUser helper in any order. The SDK only calls the
+  // callback once the permission mode allows it (i.e. not bypassPermissions),
+  // by which time askUserRef has been pointed at the real askUser.
+  let askUserRef: ((req: AskRequest) => Promise<AskResult>) | null = null
+
+  const canUseToolCallback = async (
+    toolName: string,
+    input: Record<string, unknown>,
+    _opts: { signal: AbortSignal },
+  ): Promise<{ behavior: 'allow' | 'deny'; message?: string; updatedInput?: Record<string, unknown> }> => {
+    const ask = askUserRef
+    if (!ask) {
+      return { behavior: 'allow' }
+    }
+    const summary = summariseToolInput(toolName, input)
+    const result = await ask({
+      kind: 'select',
+      question: `Run ${toolName}?`,
+      hint: summary || '(no input summary)',
+      options: [
+        { value: 'allow', label: 'Allow once', hint: 'execute just this call' },
+        { value: 'allow-session', label: 'Allow all ' + toolName + ' (this session)', hint: 'stop asking for this tool' },
+        { value: 'deny', label: 'Deny', hint: 'skip and continue' },
+      ],
+    })
+    if (result.cancelled || result.value === 'deny') {
+      return { behavior: 'deny', message: 'declined via picker' }
+    }
+    return { behavior: 'allow' }
+  }
+
+  let sessionOptions = {
+    ...buildSessionOptions({ args: opts.args }),
+    canUseTool: canUseToolCallback as unknown as SDKSessionOptions['canUseTool'],
+  }
   let session: SDKSession = unstable_v2_createSession(sessionOptions)
   let sessionId: string | null = null
   let busy = false
@@ -239,6 +291,8 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         payload: JSON.stringify({ id, ...req }),
       })
     })
+  // wire the late-bound ref so canUseToolCallback can call it
+  askUserRef = askUser
 
   const log = (line: string) => sendToTui({ type: 'status', message: line })
 
@@ -588,6 +642,46 @@ export async function runTui(opts: TuiOptions): Promise<void> {
       case '/skills': {
         const list = discoverSkills({ cwd: sessionOptions.cwd ?? process.cwd() })
         sendToTui({ type: 'status', message: formatList('Skills', list) })
+        return
+      }
+
+      case '/pm': {
+        const mode = arg.trim()
+        const allowed = new Set(['bypassPermissions', 'default', 'acceptEdits', 'plan', 'dontAsk'])
+        if (!mode) {
+          sendToTui({
+            type: 'status',
+            message:
+              `current permission-mode: ${sessionOptions.permissionMode}\n` +
+              `use: /pm <bypassPermissions|default|acceptEdits|plan|dontAsk>\n` +
+              `(non-bypass modes trigger the canUseTool picker on every tool call)`,
+          })
+          return
+        }
+        if (!allowed.has(mode)) {
+          sendToTui({ type: 'error', message: `unknown permission-mode: ${mode}` })
+          return
+        }
+        sessionOptions = { ...sessionOptions, permissionMode: mode as SDKSessionOptions['permissionMode'] }
+        await safeCloseSession(session)
+        session = unstable_v2_createSession(sessionOptions)
+        sessionId = null
+        resetSessionCostTracking()
+        sendToTui({ type: 'status', message: `permission-mode -> ${mode} (session reset)` })
+        return
+      }
+
+      case '/ask': {
+        const answer = await askUser({
+          kind: 'text',
+          question: 'Free-form picker demo',
+          hint: 'Type whatever you want, hit Enter — Esc to cancel.',
+        })
+        if (answer.cancelled) {
+          sendToTui({ type: 'status', message: 'cancelled' })
+          return
+        }
+        sendToTui({ type: 'status', message: `you answered: ${answer.value ?? '(empty)'}` })
         return
       }
 
