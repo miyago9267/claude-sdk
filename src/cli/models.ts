@@ -12,10 +12,12 @@ export interface KnownModel {
 }
 
 export const KNOWN_MODELS: KnownModel[] = [
-  { id: 'claude-opus-4-7', alias: 'opus', description: 'flagship — best reasoning, slowest' },
-  { id: 'claude-opus-4-6', description: 'previous opus revision' },
+  { id: 'claude-opus-4-8', description: 'flagship — best reasoning (use full ID; bare "opus" alias resolves older)' },
+  { id: 'claude-opus-4-7', alias: 'opus', description: 'previous opus revision' },
+  { id: 'claude-opus-4-6', description: 'older opus revision' },
   { id: 'claude-sonnet-4-6', alias: 'sonnet', description: 'balanced default for coding' },
   { id: 'claude-haiku-4-5', alias: 'haiku', description: 'fastest, cheapest, classification/summary' },
+  { id: 'claude-fable-5', description: 'most capable; requires API access — errors on Pro/Max subscription' },
 ]
 
 /**

@@ -7,6 +7,7 @@ import {
   extractAssistantContent,
   mapStopReason,
   openAIMessagesToHistory,
+  resultErrorMessage,
 } from './openai-compat.ts'
 
 const PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII='
@@ -299,6 +300,39 @@ describe('StreamingChunkConverter', () => {
       message: { content: [], stop_reason: 'end_turn' },
     } as unknown as Parameters<typeof conv.fromAssistantMessage>[0]
     expect(conv.fromAssistantMessage(msg)).toEqual([])
+  })
+})
+
+describe('resultErrorMessage', () => {
+  test('null result -> null', () => {
+    expect(resultErrorMessage(null, '')).toBeNull()
+  })
+
+  test('success result -> null', () => {
+    const ok = { type: 'result', subtype: 'success', is_error: false, result: 'hi' } as never
+    expect(resultErrorMessage(ok, 'hi')).toBeNull()
+  })
+
+  test('is_error with no assistant text -> verbatim upstream message (e.g. model not granted)', () => {
+    const err = {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      result: "There's an issue with the selected model (claude-fable-5). It may not exist or you may not have access to it.",
+    } as never
+    expect(resultErrorMessage(err, '')).toBe(
+      "There's an issue with the selected model (claude-fable-5). It may not exist or you may not have access to it.",
+    )
+  })
+
+  test('is_error but assistant produced text -> null (prefer returning the text)', () => {
+    const err = { type: 'result', subtype: 'error_max_turns', is_error: true } as never
+    expect(resultErrorMessage(err, 'partial answer')).toBeNull()
+  })
+
+  test('is_error with no message field -> synthesised from subtype', () => {
+    const err = { type: 'result', subtype: 'error_during_execution', is_error: true } as never
+    expect(resultErrorMessage(err, '')).toBe('upstream error (error_during_execution)')
   })
 })
 

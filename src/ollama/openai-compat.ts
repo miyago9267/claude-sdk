@@ -260,6 +260,25 @@ export function buildNonStreamingResponse(args: {
   }
 }
 
+/**
+ * Surface an upstream failure verbatim. When the SDK turn ends with
+ * `is_error` and produced no assistant text — e.g. the requested model isn't
+ * accessible on this account — we return the upstream message so the harness
+ * sees the real reason instead of an empty 200. Returns null on success, or
+ * when an errored turn still produced assistant text (we'd rather return that).
+ */
+export function resultErrorMessage(
+  result: SDKResultMessage | null,
+  assistantText: string,
+): string | null {
+  if (!result || assistantText.trim() !== '') return null
+  const r = result as unknown as Record<string, unknown>
+  if (!r.is_error) return null
+  if (typeof r.result === 'string' && r.result.trim()) return r.result
+  const subtype = typeof r.subtype === 'string' ? r.subtype : 'unknown'
+  return `upstream error (${subtype})`
+}
+
 export function extractUsage(result: SDKResultMessage | null): OpenAIChatCompletionUsage {
   if (!result || !('usage' in result) || !result.usage) {
     return { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }

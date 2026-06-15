@@ -227,19 +227,23 @@ function parameterSizeFor(modelId: string): string {
   return 'unknown'
 }
 
+const ONE_MILLION_CTX = new Set(['claude-opus-4-8', 'claude-opus-4-7', 'claude-fable-5'])
+
 function contextLengthFor(modelId: string): number {
-  // Opus 4.7 ships with the 1M-token window; older Claude tiers stay at 200K.
-  if (modelId === 'claude-opus-4-7') return 1_000_000
+  // Current flagship tiers ship the 1M-token window; older tiers stay at 200K.
+  if (ONE_MILLION_CTX.has(modelId)) return 1_000_000
   if (modelId.includes('claude')) return 200_000
   return 200_000
 }
 
 function humanNameFor(modelId: string): string {
   const map: Record<string, string> = {
+    'claude-opus-4-8': 'Claude Opus 4.8 (1M)',
     'claude-opus-4-7': 'Claude Opus 4.7 (1M)',
     'claude-opus-4-6': 'Claude Opus 4.6',
     'claude-sonnet-4-6': 'Claude Sonnet 4.6',
     'claude-haiku-4-5': 'Claude Haiku 4.5',
+    'claude-fable-5': 'Claude Fable 5 (1M)',
   }
   return map[modelId] ?? modelId
 }

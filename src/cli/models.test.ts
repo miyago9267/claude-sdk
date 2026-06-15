@@ -34,6 +34,16 @@ describe('resolveModel', () => {
   })
 })
 
+describe('resolveModel — newly advertised models', () => {
+  test('claude-opus-4-8 is known', () => {
+    expect(resolveModel('claude-opus-4-8')).toEqual({ model: 'claude-opus-4-8', known: true })
+  })
+
+  test('claude-fable-5 is known (advertised; a call surfaces the upstream access error)', () => {
+    expect(resolveModel('claude-fable-5')).toEqual({ model: 'claude-fable-5', known: true })
+  })
+})
+
 describe('formatKnownModels', () => {
   test('lists all known models with aliases when available', () => {
     const text = formatKnownModels()
@@ -41,5 +51,11 @@ describe('formatKnownModels', () => {
     expect(text).toContain('alias: opus')
     expect(text).toContain('claude-sonnet-4-6')
     expect(text).toContain('alias: sonnet')
+  })
+
+  test('advertises current flagship + fable (fable is not granted on subscription)', () => {
+    const text = formatKnownModels()
+    expect(text).toContain('claude-opus-4-8')
+    expect(text).toContain('claude-fable-5')
   })
 })

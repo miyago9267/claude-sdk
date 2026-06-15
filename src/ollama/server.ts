@@ -35,6 +35,7 @@ import {
   buildNonStreamingResponse,
   buildPromptFromOpenAIMessages,
   openAIMessagesToHistory,
+  resultErrorMessage,
   type OpenAIChatCompletionChunk,
   type OpenAIChatCompletionRequest,
   type OpenAIModelsResponse,
@@ -62,10 +63,15 @@ export const FALLBACK_OLLAMA_PORT = 41434
 export const BRIDGE_VERSION = '0.10.0'
 
 export const DEFAULT_EXPOSED_MODELS = [
+  'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
+  // Advertised for completeness. Not granted on Pro/Max subscription — a call
+  // returns the upstream "may not exist or you may not have access" message
+  // verbatim (see resultErrorMessage), not a fake success.
+  'claude-fable-5',
 ] as const
 
 export interface OllamaServerConfig {
@@ -292,6 +298,15 @@ export function createOllamaServer(
               break
             }
           }
+          const upstreamError = resultErrorMessage(result, assistantText)
+          if (upstreamError) {
+            pool.evictBySession(acquired.session)
+            await stream.writeSSE({
+              data: JSON.stringify({ error: { message: upstreamError, type: 'upstream_error' } }),
+            })
+            await stream.writeSSE({ data: '[DONE]' })
+            return
+          }
           await stream.writeSSE({ data: JSON.stringify(converter.buildFinishChunk()) })
           if (result) {
             await stream.writeSSE({ data: JSON.stringify(converter.buildUsageChunk(result)) })
@@ -342,6 +357,13 @@ export function createOllamaServer(
       const message = err instanceof Error ? err.message : String(err)
       return c.json({ error: { message, type: 'server_error' } }, 500)
     }
+
+    const upstreamError = resultErrorMessage(result, assistantText)
+    if (upstreamError) {
+      pool.evictBySession(acquired.session)
+      return c.json({ error: { message: upstreamError, type: 'upstream_error' } }, 502)
+    }
+
     rememberSession({ pool, model, history, assistantText, session: acquired.session })
 
     return c.json(buildNonStreamingResponse({ id: requestId, model, assistantMsgs, result }))
