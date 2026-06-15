@@ -3,35 +3,35 @@ import { describe, expect, test } from 'bun:test'
 import { parseArgs } from './args.ts'
 
 describe('parseArgs', () => {
-  test('positional prompt -> oneshot (matches official: prompt without -p still runs)', () => {
+  test('no mode flag -> help (CLI is a launcher; chat lives in the bridge/library)', () => {
+    expect(parseArgs([]).mode).toBe('help')
+  })
+
+  test('positional prompt without --ollama/--tui -> help (prompt still parsed for TUI seeding)', () => {
     const a = parseArgs(['hello world'])
-    expect(a.mode).toBe('oneshot')
+    expect(a.mode).toBe('help')
     expect(a.prompt).toBe('hello world')
-  })
-
-  test('-p as boolean (official: --print is a flag)', () => {
-    const a = parseArgs(['-p', 'hi'])
-    expect(a.mode).toBe('oneshot')
-    expect(a.print).toBe(true)
-    expect(a.prompt).toBe('hi')
-  })
-
-  test('--print + no positional + stdin pipe handled by bin', () => {
-    const a = parseArgs(['--print'])
-    expect(a.print).toBe(true)
-    expect(a.mode).toBe('oneshot')
-    expect(a.prompt).toBeUndefined()
   })
 
   test('multi-word positional joins', () => {
     expect(parseArgs(['hello', 'world']).prompt).toBe('hello world')
   })
 
-  test('--ollama overrides oneshot', () => {
+  test('--ollama -> ollama', () => {
     const a = parseArgs(['--ollama', '--port', '5000'])
     expect(a.mode).toBe('ollama')
     expect(a.port).toBe(5000)
     expect(a.ollama).toBe(true)
+  })
+
+  test('--tui -> tui', () => {
+    const a = parseArgs(['--tui'])
+    expect(a.mode).toBe('tui')
+    expect(a.tui).toBe(true)
+  })
+
+  test('-p is no longer a flag (oneshot removed) -> unknown option', () => {
+    expect(() => parseArgs(['-p', 'hi'])).toThrow(/Unknown option/)
   })
 
   test('-h / --help / -v / --version', () => {
@@ -41,13 +41,9 @@ describe('parseArgs', () => {
     expect(parseArgs(['--version']).mode).toBe('version')
   })
 
-  test('no args -> repl', () => {
-    expect(parseArgs([]).mode).toBe('repl')
-  })
-
-  test('options without prompt stay in repl', () => {
+  test('options without a mode flag stay in help', () => {
     const a = parseArgs(['--model', 'sonnet'])
-    expect(a.mode).toBe('repl')
+    expect(a.mode).toBe('help')
     expect(a.model).toBe('sonnet')
   })
 
@@ -88,11 +84,6 @@ describe('parseArgs', () => {
 
   test('--setting-sources', () => {
     expect(parseArgs(['--setting-sources', 'user,local']).settingSources).toEqual(['user', 'local'])
-  })
-
-  test('--output-format json/stream-json', () => {
-    expect(parseArgs(['-p', '--output-format', 'json', 'hi']).outputFormat).toBe('json')
-    expect(parseArgs(['-p', '--output-format', 'stream-json', 'hi']).outputFormat).toBe('stream-json')
   })
 
   test('-c, --continue boolean', () => {

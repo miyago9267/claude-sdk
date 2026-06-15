@@ -1,29 +1,19 @@
 #!/usr/bin/env bun
 /**
- * `claude-sdk` CLI entry. Args mirror the official `claude` CLI where
- * possible; see `src/cli/args.ts` for the full surface.
+ * `claude-sdk` CLI entry — a thin launcher for the two runtime surfaces.
+ * Everything else (the patched agent SDK, context manager, bridge) is
+ * consumed by importing the library; see package.json `exports`.
  *
  * Dispatch:
- *   --help / --version          → print and exit
- *   --ollama                    → Ollama-compatible HTTP bridge
- *   -p / --print or stdin pipe  → one-shot
- *   prompt arg without -p       → REPL with seeded first turn (matches
- *                                 official behaviour)
- *   no args + TTY               → REPL
+ *   --help / --version   → print and exit
+ *   --ollama             → OpenAI-compat + Ollama-native HTTP bridge
+ *   --tui                → bonus bubbletea terminal front-end
+ *   (anything else)      → help
  */
 
 import { HELP_TEXT, parseArgs } from './args.ts'
-import { runOneShot } from './runner.ts'
-import { runRepl } from './repl.ts'
 import { SessionStore, type SessionMeta } from './session-store.ts'
 import { OfficialResolver, type OfficialMeta } from './official-session.ts'
-
-async function readStdin(): Promise<string> {
-  if (process.stdin.isTTY) return ''
-  const chunks: Buffer[] = []
-  for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk)
-  return Buffer.concat(chunks).toString('utf8').trim()
-}
 
 function printVersion(): void {
   try {
@@ -41,28 +31,13 @@ function warnUnsupported(args: ReturnType<typeof parseArgs>): void {
   )
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2))
-
-  if (args.mode === 'help') {
-    process.stdout.write(HELP_TEXT)
-    return
-  }
-
-  if (args.mode === 'version') {
-    printVersion()
-    return
-  }
-
-  warnUnsupported(args)
-
-  // Session store + resume resolution. We accept resume targets from two
-  // sources — our own ~/.claude-sdk/sessions/ (local store) and the
-  // official ~/.claude/projects/ layout. Whichever is most recent / matches
-  // wins; an official-only hit is mirrored into the local index so the same
-  // id chains both files going forward.
-  const official = new OfficialResolver()
-  const store = new SessionStore({ official })
+/**
+ * Resolve a resume target for the TUI from two sources — our own
+ * ~/.claude-sdk/sessions/ (local store) and the official ~/.claude/projects/
+ * layout. An official-only hit is mirrored into the local index so the same
+ * id chains both files going forward. Returns the logical session id to seed.
+ */
+function resolveResume(args: ReturnType<typeof parseArgs>, store: SessionStore, official: OfficialResolver): string | undefined {
   const cwd = args.cwd ?? process.cwd()
   let resumeMeta: SessionMeta | null = null
   let resumeSource: 'local' | 'official' | null = null
@@ -97,9 +72,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Promote an official-only session into the local index + jsonl so the
-  // history-prefix path reads from one canonical place. The id is shared,
-  // so subsequent turns mirror back to the same official jsonl.
   if (resumeSource === 'official' && officialMeta) {
     resumeMeta = store.create({
       cwd: officialMeta.cwd || cwd,
@@ -116,13 +88,24 @@ async function main(): Promise<void> {
       `claude-sdk: resuming session ${resumeMeta.id} (${resumeMeta.turnCount} turns)\n`,
     )
   }
-  const logicalSessionId = resumeMeta?.id
 
-  if (args.mode === 'tui') {
-    const { runTui } = await import('./tui.ts')
-    await runTui({ args, store, logicalSessionId })
+  return resumeMeta?.id
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2))
+
+  if (args.mode === 'version') {
+    printVersion()
     return
   }
+
+  if (args.mode === 'help') {
+    process.stdout.write(HELP_TEXT)
+    return
+  }
+
+  warnUnsupported(args)
 
   if (args.mode === 'ollama') {
     const { serveOllamaBridge } = await import('../ollama/server.ts')
@@ -142,7 +125,7 @@ async function main(): Promise<void> {
     process.stdout.write(`  GET  ${handle.url}/api/tags\n`)
     process.stdout.write(`  POST ${handle.url}/api/show\n`)
     process.stdout.write(`  POST ${handle.url}/api/chat\n`)
-    process.stdout.write(`Point GitHub Copilot Chat → Manage Models → Ollama at this URL.\n`)
+    process.stdout.write(`  POST ${handle.url}/v1/chat/completions  (OpenAI-compat)\n`)
     const stop = () => {
       handle.stop()
       process.exit(0)
@@ -152,24 +135,16 @@ async function main(): Promise<void> {
     return
   }
 
-  if (args.mode === 'oneshot') {
-    const piped = args.prompt ? '' : await readStdin()
-    const prompt = args.prompt ?? piped
-    if (!prompt) {
-      process.stderr.write('No prompt provided. See --help.\n')
-      process.exit(2)
-    }
-    await runOneShot({ prompt, args, store, logicalSessionId })
+  if (args.mode === 'tui') {
+    const official = new OfficialResolver()
+    const store = new SessionStore({ official })
+    const logicalSessionId = resolveResume(args, store, official)
+    const { runTui } = await import('./tui.ts')
+    await runTui({ args, store, logicalSessionId })
     return
   }
 
-  const piped = await readStdin()
-  if (piped) {
-    await runOneShot({ prompt: piped, args, store, logicalSessionId })
-    return
-  }
-
-  await runRepl({ args, seedPrompt: args.prompt, store, logicalSessionId })
+  process.stdout.write(HELP_TEXT)
 }
 
 main().catch((err) => {

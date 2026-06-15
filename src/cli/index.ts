@@ -1,6 +1,4 @@
-export { parseArgs, HELP_TEXT, type ParsedArgs, type OutputFormat, type PermissionMode } from './args.ts'
-export { runOneShot, type OneShotOptions } from './runner.ts'
-export { runRepl, type ReplOptions } from './repl.ts'
+export { parseArgs, HELP_TEXT, type ParsedArgs, type PermissionMode } from './args.ts'
 export { runTui, type TuiOptions } from './tui.ts'
 export { buildSessionOptions } from './session-options.ts'
 export { c } from './colors.ts'

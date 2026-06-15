@@ -8,11 +8,10 @@
  * (--ollama / --port / --host / --watermark) live alongside.
  */
 
-export type OutputFormat = 'text' | 'json' | 'stream-json'
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk'
 
 export interface ParsedArgs {
-  mode: 'oneshot' | 'repl' | 'ollama' | 'help' | 'version' | 'tui'
+  mode: 'ollama' | 'help' | 'version' | 'tui'
   prompt?: string
 
   model?: string
@@ -25,8 +24,6 @@ export interface ParsedArgs {
   allowDangerouslySkipPermissions?: boolean
   maxTurns?: number
   settingSources?: string[]
-  outputFormat?: OutputFormat
-  print?: boolean
   resume?: string
   continue?: boolean
   debug?: string | true
@@ -46,56 +43,53 @@ export interface ParsedArgs {
 }
 
 export const HELP_TEXT = `\
-claude-sdk — patched Claude Agent SDK with Ollama bridge
+claude-sdk — subscription-backed Claude Agent SDK: library + OpenAI/Ollama bridge
+
+This CLI is a launcher for two surfaces:
+  --ollama   HTTP bridge (OpenAI-compat + Ollama-native) for harness frameworks
+  --tui      bonus terminal front-end (hand-rolled; build first)
+
+For everything else, import the library:
+  import { ... } from '@miyago/claude-sdk'          # patched agent SDK
+  import { serveOllamaBridge } from '@miyago/claude-sdk/ollama'
 
 Usage:
-  claude-sdk [options] [prompt]
   claude-sdk --ollama [options]
-  claude-sdk -p [options] [prompt]
+  claude-sdk --tui [options]
 
-Common options (mirrors official \`claude\` CLI):
-  -p, --print                          Print response and exit (no REPL)
-      --model <id>                     Model alias or full ID (e.g. sonnet, claude-sonnet-4-6)
+Bridge options:
+      --port <n>                       Server port (default: 11434 or env PORT)
+      --host <addr>                    Server bind address (default: 127.0.0.1)
+      --model <id>                     Default model (alias or full ID, e.g. claude-sonnet-4-6)
+      --cwd <path>                     Agent working directory (default: cwd)
       --system-prompt <text>           Override system prompt
-      --append-system-prompt <text>    Append to default system prompt
-      --add-dir <dirs>                 Comma-separated extra working dirs
-      --allowedTools <list>            Comma-separated tool allowlist (e.g. "Bash,Edit")
-      --disallowedTools <list>         Comma-separated tool denylist
       --permission-mode <mode>         default | acceptEdits | bypassPermissions | plan | dontAsk
       --allow-dangerously-skip-permissions
                                        Bypass all permission checks
       --max-turns <n>                  Max agent turns (default: 10)
+
+TUI options (bonus):
+      --watermark <n>                  ContextManager watermark tokens (default: 150000)
+  -c, --continue                       Continue last conversation in this cwd
+  -r, --resume <id>                    Resume by session ID (local or official)
+
+Shared:
+      --add-dir <dirs>                 Comma-separated extra working dirs
+      --allowedTools <list>            Comma-separated tool allowlist (e.g. "Bash,Edit")
+      --disallowedTools <list>         Comma-separated tool denylist
       --setting-sources <list>         Comma list: user,project,local (default: all three)
-      --output-format <fmt>            text | json | stream-json (only with -p)
-  -c, --continue                       (planned) Continue last conversation
-  -r, --resume <id>                    (planned) Resume by session ID
   -d, --debug [filter]                 Enable debug logs
       --verbose                        Verbose mode
-
-Custom (claude-sdk additions):
-      --cwd <path>                     Working directory (default: cwd)
-      --watermark <n>                  ContextManager watermark tokens (default: 150000)
-      --tui                            Launch bubbletea TUI front-end
-                                       (build first: bash scripts/build-tui.sh)
-      --ollama                         Run Ollama-compatible HTTP bridge for IDE clients
-                                       (e.g. GitHub Copilot Chat — Manage Models → Ollama)
-      --port <n>                       Server port (default: 11434 or env PORT)
-      --host <addr>                    Server bind address (default: 127.0.0.1)
-
   -h, --help                           Show this help
   -v, --version                        Show version
 
 Examples:
-  claude-sdk                           # interactive REPL
-  claude-sdk "Explain this repo"       # interactive with seed prompt
-  claude-sdk -p "What is 2+2?"         # one-shot
-  claude-sdk -p --output-format json "Summarise" | jq .
-  echo "Summarise" | claude-sdk -p
-  claude-sdk --ollama                  # Ollama-compatible bridge on 11434
+  claude-sdk --ollama                  # bridge on 11434 (point any OpenAI/Ollama client here)
+  claude-sdk --ollama --port 11500     # custom port
+  claude-sdk --tui                     # bonus TUI (build: bash scripts/build-tui.sh)
 `
 
 const FLAGS_BOOLEAN = new Set([
-  '-p', '--print',
   '-c', '--continue',
   '--allow-dangerously-skip-permissions',
   '--dangerously-skip-permissions',
@@ -137,7 +131,7 @@ const UNSUPPORTED = new Set([
 ])
 
 export function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { mode: 'repl', unsupported: [], raw: argv }
+  const out: ParsedArgs = { mode: 'help', unsupported: [], raw: argv }
   const positional: string[] = []
 
   for (let i = 0; i < argv.length; i++) {
@@ -162,10 +156,6 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case '-v':
       case '--version':
         out.mode = 'version'
-        break
-      case '-p':
-      case '--print':
-        out.print = true
         break
       case '--model':
         out.model = takeValue()
@@ -199,9 +189,6 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break
       case '--setting-sources':
         out.settingSources = splitList(takeValue())
-        break
-      case '--output-format':
-        out.outputFormat = takeValue() as OutputFormat
         break
       case '-r':
       case '--resume':
@@ -251,15 +238,13 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
   }
 
-  if (out.mode === 'help' || out.mode === 'version') return out
+  if (out.mode === 'version') return out
 
   if (positional.length) out.prompt = positional.join(' ')
 
   if (out.ollama) out.mode = 'ollama'
   else if (out.tui) out.mode = 'tui'
-  else if (out.print) out.mode = 'oneshot'
-  else if (out.prompt !== undefined) out.mode = 'oneshot'
-  else out.mode = 'repl'
+  else out.mode = 'help'
 
   return out
 }
