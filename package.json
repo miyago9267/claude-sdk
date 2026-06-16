@@ -42,17 +42,13 @@
     }
   },
   "scripts": {
-    "postinstall": "bash scripts/postinstall.sh",
-    "patch:check": "bash scripts/patch-v2.sh --check",
-    "patch:v2": "bash scripts/patch-v2.sh",
-    "patch:cli": "bash scripts/patch.sh",
     "test": "bun test src/",
     "ollama": "bun src/cli/bin.ts --ollama",
     "tui": "bun src/cli/bin.ts --tui",
     "build:tui": "bash scripts/build-tui.sh"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.90",
+    "@anthropic-ai/claude-agent-sdk": "0.3.177",
     "hono": "^4.12.15"
   },
   "peerDependencies": {
@@ -66,10 +62,6 @@
     "src/ollama/",
     "src/cli/",
     "cmd/tui/",
-    "scripts/patch-v2.mjs",
-    "scripts/patch-v2.sh",
-    "scripts/patch.sh",
-    "scripts/postinstall.sh",
     "scripts/build-tui.sh"
   ],
   "repository": {

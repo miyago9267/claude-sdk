@@ -1,7 +1,13 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 import {
   ContextManager,
+  RECOMMENDED_SUBPROCESS_ENV,
+  computeDynamicWatermark,
+  DEFAULT_WATERMARK_RATIO,
+  DEFAULT_WATERMARK_BUFFER,
+  detectDefaultCacheTTLMs,
+  detectDefaultMarginMs,
   diffCumulativeModelUsage,
   type ContextManagerCallbacks,
 } from './context-manager.ts'
@@ -167,5 +173,416 @@ describe('cumulative usage semantics', () => {
     const secondPostCompact = freshManager.getState().contextTokensEstimate
     // delta = 3000 + 1000 + 1000 + 500 = 5500
     expect(secondPostCompact).toBe(200_000 + 5_500)
+  })
+})
+
+describe('Patch A — Bedrock-aware cache TTL default', () => {
+  const originalEnv = process.env.CLAUDE_CODE_USE_BEDROCK
+
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK
+    else process.env.CLAUDE_CODE_USE_BEDROCK = originalEnv
+  })
+
+  test('detectDefaultCacheTTLMs returns 1hr when CLAUDE_CODE_USE_BEDROCK is unset', () => {
+    delete process.env.CLAUDE_CODE_USE_BEDROCK
+    expect(detectDefaultCacheTTLMs()).toBe(3_600_000)
+  })
+
+  test('detectDefaultCacheTTLMs returns 5min when CLAUDE_CODE_USE_BEDROCK="1"', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    expect(detectDefaultCacheTTLMs()).toBe(300_000)
+  })
+
+  test('detectDefaultCacheTTLMs returns 5min when CLAUDE_CODE_USE_BEDROCK="true"', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = 'true'
+    expect(detectDefaultCacheTTLMs()).toBe(300_000)
+  })
+
+  test('detectDefaultCacheTTLMs returns 1hr when CLAUDE_CODE_USE_BEDROCK="0"', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '0'
+    expect(detectDefaultCacheTTLMs()).toBe(3_600_000)
+  })
+
+  test('detectDefaultMarginMs returns 15min for 1hr TTL', () => {
+    expect(detectDefaultMarginMs(3_600_000)).toBe(900_000)
+  })
+
+  test('detectDefaultMarginMs returns 60s for 5min TTL', () => {
+    expect(detectDefaultMarginMs(300_000)).toBe(60_000)
+  })
+
+  test('ContextManager picks short TTL+margin when bedrock env is set', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    const manager = new ContextManager(
+      { watermarkTokens: 1_000 },
+      {},
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { keepaliveConfig: { cacheTTLMs: number; marginMs: number } }).keepaliveConfig
+    expect(cfg.cacheTTLMs).toBe(300_000)
+    expect(cfg.marginMs).toBe(60_000)
+  })
+
+  test('ContextManager picks 1hr TTL+15min margin when bedrock env is unset', () => {
+    delete process.env.CLAUDE_CODE_USE_BEDROCK
+    const manager = new ContextManager(
+      { watermarkTokens: 1_000 },
+      {},
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { keepaliveConfig: { cacheTTLMs: number; marginMs: number } }).keepaliveConfig
+    expect(cfg.cacheTTLMs).toBe(3_600_000)
+    expect(cfg.marginMs).toBe(900_000)
+  })
+
+  test('explicit cacheTTLMs overrides env detection', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    const manager = new ContextManager(
+      { watermarkTokens: 1_000 },
+      { cacheTTLMs: 1_800_000 },
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { keepaliveConfig: { cacheTTLMs: number; marginMs: number } }).keepaliveConfig
+    expect(cfg.cacheTTLMs).toBe(1_800_000)
+  })
+
+  test('explicit marginMs overrides default', () => {
+    const manager = new ContextManager(
+      { watermarkTokens: 1_000 },
+      { marginMs: 12_345 },
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { keepaliveConfig: { marginMs: number } }).keepaliveConfig
+    expect(cfg.marginMs).toBe(12_345)
+  })
+})
+
+describe('Patch B — Rapid-refill breaker', () => {
+  type BreakerState = {
+    recentCompactionTimestamps: number[]
+    rapidRefillBreakerTrips: number
+  }
+
+  function makeRecordingCallbacks(restartCalls: Array<string | undefined>): ContextManagerCallbacks {
+    return {
+      getSession: () => null,
+      getSessionId: () => null,
+      restartSession: async (summary) => {
+        restartCalls.push(summary)
+      },
+      log: () => {},
+      model: 'claude-opus-4-6',
+      cwd: '/tmp',
+    }
+  }
+
+  test('getState exposes breaker fields with sane defaults', () => {
+    const manager = new ContextManager(
+      { watermarkTokens: 1_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+    const state = manager.getState() as ContextManager['getState'] extends () => infer R ? R : never
+    const s = state as unknown as BreakerState & { totalCompactions: number }
+    expect(s.recentCompactionTimestamps).toEqual([])
+    expect(s.rapidRefillBreakerTrips).toBe(0)
+  })
+
+  test('three compactions within window trip breaker and downgrade compact -> handoff', async () => {
+    const restarts: Array<string | undefined> = []
+    const manager = new ContextManager(
+      {
+        watermarkTokens: 1_000,
+        strategy: 'compact',
+        rapidRefillWindowMs: 60_000,
+        rapidRefillThreshold: 3,
+      },
+      { enabled: false },
+      makeRecordingCallbacks(restarts),
+    )
+
+    // Stub the private strategy executors so we observe which one is invoked.
+    const calls: string[] = []
+    ;(manager as unknown as { doBuiltinCompact: () => Promise<void> }).doBuiltinCompact = async () => {
+      calls.push('compact')
+    }
+    ;(manager as unknown as { doHandoff: () => Promise<void> }).doHandoff = async () => {
+      calls.push('handoff')
+    }
+
+    for (let i = 0; i < 3; i++) {
+      ;(manager as unknown as { state: { contextTokensEstimate: number } }).state.contextTokensEstimate = 50_000
+      await manager.checkWatermark()
+    }
+
+    const s = manager.getState() as unknown as BreakerState & { totalCompactions: number }
+    expect(s.rapidRefillBreakerTrips).toBe(1)
+    expect(s.totalCompactions).toBe(3)
+    expect(calls).toEqual(['compact', 'compact', 'handoff'])
+  })
+
+  test('breaker downgrades handoff -> restart', async () => {
+    const restarts: Array<string | undefined> = []
+    const manager = new ContextManager(
+      {
+        watermarkTokens: 1_000,
+        strategy: 'handoff',
+        rapidRefillWindowMs: 60_000,
+        rapidRefillThreshold: 3,
+      },
+      { enabled: false },
+      makeRecordingCallbacks(restarts),
+    )
+
+    const calls: string[] = []
+    ;(manager as unknown as { doHandoff: () => Promise<void> }).doHandoff = async () => {
+      calls.push('handoff')
+    }
+
+    for (let i = 0; i < 3; i++) {
+      ;(manager as unknown as { state: { contextTokensEstimate: number } }).state.contextTokensEstimate = 50_000
+      await manager.checkWatermark()
+    }
+
+    const s = manager.getState() as unknown as BreakerState
+    expect(s.rapidRefillBreakerTrips).toBe(1)
+    // First two go through stubbed doHandoff; third is downgraded to restart -> restartSession() called.
+    expect(calls).toEqual(['handoff', 'handoff'])
+    expect(restarts.length).toBe(1)
+    expect(restarts[0]).toBeUndefined()
+  })
+
+  test('restart strategy is not downgraded further', async () => {
+    const restarts: Array<string | undefined> = []
+    const manager = new ContextManager(
+      {
+        watermarkTokens: 1_000,
+        strategy: 'restart',
+        rapidRefillWindowMs: 60_000,
+        rapidRefillThreshold: 3,
+      },
+      { enabled: false },
+      makeRecordingCallbacks(restarts),
+    )
+
+    for (let i = 0; i < 3; i++) {
+      ;(manager as unknown as { state: { contextTokensEstimate: number } }).state.contextTokensEstimate = 50_000
+      await manager.checkWatermark()
+    }
+
+    const s = manager.getState() as unknown as BreakerState & { totalCompactions: number }
+    // Breaker still trips (counter accounting), but strategy unchanged.
+    expect(s.rapidRefillBreakerTrips).toBe(1)
+    expect(s.totalCompactions).toBe(3)
+  })
+
+  test('compactions outside the window do not trip breaker', async () => {
+    const restarts: Array<string | undefined> = []
+    const manager = new ContextManager(
+      {
+        watermarkTokens: 1_000,
+        strategy: 'restart',
+        rapidRefillWindowMs: 1_000,
+        rapidRefillThreshold: 3,
+      },
+      { enabled: false },
+      makeRecordingCallbacks(restarts),
+    )
+
+    const realNow = Date.now
+    let fakeNow = 1_000_000
+    Date.now = () => fakeNow
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        ;(manager as unknown as { state: { contextTokensEstimate: number } }).state.contextTokensEstimate = 50_000
+        await manager.checkWatermark()
+        fakeNow += 5_000 // 5s apart, window is 1s -> never 3 in window
+      }
+    } finally {
+      Date.now = realNow
+    }
+
+    const s = manager.getState() as unknown as BreakerState
+    expect(s.rapidRefillBreakerTrips).toBe(0)
+  })
+
+  test('breaker resets window after tripping (no immediate re-trip on next call)', async () => {
+    const restarts: Array<string | undefined> = []
+    const manager = new ContextManager(
+      {
+        watermarkTokens: 1_000,
+        strategy: 'restart',
+        rapidRefillWindowMs: 60_000,
+        rapidRefillThreshold: 3,
+      },
+      { enabled: false },
+      makeRecordingCallbacks(restarts),
+    )
+
+    for (let i = 0; i < 3; i++) {
+      ;(manager as unknown as { state: { contextTokensEstimate: number } }).state.contextTokensEstimate = 50_000
+      await manager.checkWatermark()
+    }
+    let s = manager.getState() as unknown as BreakerState
+    expect(s.rapidRefillBreakerTrips).toBe(1)
+    expect(s.recentCompactionTimestamps.length).toBe(0)
+
+    // One more compaction: should NOT re-trip immediately (window was reset).
+    ;(manager as unknown as { state: { contextTokensEstimate: number } }).state.contextTokensEstimate = 50_000
+    await manager.checkWatermark()
+    s = manager.getState() as unknown as BreakerState
+    expect(s.rapidRefillBreakerTrips).toBe(1)
+  })
+
+  test('default threshold is 3 and default window is 60_000ms', async () => {
+    const restarts: Array<string | undefined> = []
+    const manager = new ContextManager(
+      { watermarkTokens: 1_000, strategy: 'restart' },
+      { enabled: false },
+      makeRecordingCallbacks(restarts),
+    )
+
+    for (let i = 0; i < 2; i++) {
+      ;(manager as unknown as { state: { contextTokensEstimate: number } }).state.contextTokensEstimate = 50_000
+      await manager.checkWatermark()
+    }
+    let s = manager.getState() as unknown as BreakerState
+    expect(s.rapidRefillBreakerTrips).toBe(0)
+
+    ;(manager as unknown as { state: { contextTokensEstimate: number } }).state.contextTokensEstimate = 50_000
+    await manager.checkWatermark()
+    s = manager.getState() as unknown as BreakerState
+    expect(s.rapidRefillBreakerTrips).toBe(1)
+  })
+})
+
+describe('Patch C1 — dynamic watermark from modelContextWindow', () => {
+  test('explicit watermarkTokens wins even when modelContextWindow is set', () => {
+    const manager = new ContextManager(
+      { watermarkTokens: 200_000, modelContextWindow: 1_000_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { config: { watermarkTokens: number } }).config
+    expect(cfg.watermarkTokens).toBe(200_000)
+  })
+
+  test('modelContextWindow alone computes watermark via ratio - buffer', () => {
+    const manager = new ContextManager(
+      { modelContextWindow: 200_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { config: { watermarkTokens: number } }).config
+    expect(cfg.watermarkTokens).toBe(Math.floor(200_000 * 0.75) - 13_500)
+  })
+
+  test('tiny modelContextWindow clamps watermark to floor 10_000', () => {
+    // 20_000 * 0.75 - 13_500 = 1_500 → clamp to 10_000
+    const manager = new ContextManager(
+      { modelContextWindow: 20_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { config: { watermarkTokens: number } }).config
+    expect(cfg.watermarkTokens).toBe(10_000)
+  })
+
+  test('neither field set falls back to 150_000', () => {
+    const manager = new ContextManager(
+      {},
+      { enabled: false },
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { config: { watermarkTokens: number } }).config
+    expect(cfg.watermarkTokens).toBe(150_000)
+  })
+
+  test('computeDynamicWatermark formula', () => {
+    expect(computeDynamicWatermark(1_000_000, 0.75, 13_500)).toBe(736_500)
+    expect(computeDynamicWatermark(200_000, 0.75, 13_500)).toBe(136_500)
+  })
+
+  test('computeDynamicWatermark clamps result to >= 10_000', () => {
+    expect(computeDynamicWatermark(20_000, 0.75, 13_500)).toBe(10_000)
+    expect(computeDynamicWatermark(0, 0.75, 13_500)).toBe(10_000)
+  })
+
+  test('default constants exported with expected values', () => {
+    expect(DEFAULT_WATERMARK_RATIO).toBe(0.75)
+    expect(DEFAULT_WATERMARK_BUFFER).toBe(13_500)
+  })
+
+  test('custom ratio and buffer applied via config', () => {
+    const manager = new ContextManager(
+      { modelContextWindow: 1_000_000, watermarkRatio: 0.5, watermarkBuffer: 0 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+    const cfg = (manager as unknown as { config: { watermarkTokens: number } }).config
+    expect(cfg.watermarkTokens).toBe(500_000)
+  })
+})
+
+describe('Patch C2 — autoCompactWindow subprocess env', () => {
+  test('getSubprocessEnv omits AUTO_COMPACT_WINDOW when not configured', () => {
+    const manager = new ContextManager(
+      { watermarkTokens: 1_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+    const env = manager.getSubprocessEnv()
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    // base env still present
+    expect(env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe(RECOMMENDED_SUBPROCESS_ENV.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE)
+  })
+
+  test('getSubprocessEnv includes AUTO_COMPACT_WINDOW as string when configured', () => {
+    const manager = new ContextManager(
+      { watermarkTokens: 1_000, autoCompactWindow: 200_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )
+    const env = manager.getSubprocessEnv()
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('200000')
+  })
+
+  test('constructor throws when autoCompactWindow below 100_000', () => {
+    expect(() => new ContextManager(
+      { autoCompactWindow: 99_999 },
+      { enabled: false },
+      makeCallbacks(),
+    )).toThrow('autoCompactWindow must be integer in [100000, 1000000]')
+  })
+
+  test('constructor throws when autoCompactWindow above 1_000_000', () => {
+    expect(() => new ContextManager(
+      { autoCompactWindow: 1_000_001 },
+      { enabled: false },
+      makeCallbacks(),
+    )).toThrow('autoCompactWindow must be integer in [100000, 1000000]')
+  })
+
+  test('constructor throws when autoCompactWindow is not an integer', () => {
+    expect(() => new ContextManager(
+      { autoCompactWindow: 200_000.5 },
+      { enabled: false },
+      makeCallbacks(),
+    )).toThrow('autoCompactWindow must be integer in [100000, 1000000]')
+  })
+
+  test('boundary values 100_000 and 1_000_000 accepted', () => {
+    expect(() => new ContextManager(
+      { autoCompactWindow: 100_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )).not.toThrow()
+    expect(() => new ContextManager(
+      { autoCompactWindow: 1_000_000 },
+      { enabled: false },
+      makeCallbacks(),
+    )).not.toThrow()
   })
 })

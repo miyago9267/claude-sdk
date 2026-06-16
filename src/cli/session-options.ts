@@ -4,8 +4,8 @@
  */
 
 import type {
+  Options,
   PermissionMode,
-  SDKSessionOptions,
   SettingSource,
 } from '@anthropic-ai/claude-agent-sdk'
 
@@ -18,7 +18,7 @@ export interface BuildSessionOptions {
   includePartialMessages?: boolean
 }
 
-export function buildSessionOptions(opts: BuildSessionOptions): SDKSessionOptions {
+export function buildSessionOptions(opts: BuildSessionOptions): Options {
   const { args, defaultModel = 'claude-sonnet-4-6', includePartialMessages = true } = opts
 
   const systemPrompt = args.systemPrompt

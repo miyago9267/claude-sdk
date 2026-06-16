@@ -1,14 +1,14 @@
-import type { SDKSession } from '@anthropic-ai/claude-agent-sdk'
+import type { V2Session } from '../shared/query-session.ts'
 
 /**
- * Close an SDKSession defensively. The patched SDK occasionally returns a
- * non-Promise value from close() (notably when the session was already torn
- * down by an internal slash-command handler), and the previous
- * `session.close().catch(() => {})` pattern crashed with `Cannot read
- * properties of undefined (reading 'catch')` in that case. Wrapping in
- * try/catch around an `await Promise.resolve(...)` accepts both shapes.
+ * Close a session defensively. close() may return a non-Promise value
+ * (notably when the session was already torn down by an internal
+ * slash-command handler), and a bare `session.close().catch(() => {})`
+ * pattern crashed with `Cannot read properties of undefined (reading
+ * 'catch')` in that case. Wrapping in try/catch around an
+ * `await Promise.resolve(...)` accepts both shapes.
  */
-export async function safeCloseSession(session: SDKSession | null | undefined): Promise<void> {
+export async function safeCloseSession(session: V2Session | null | undefined): Promise<void> {
   if (!session || typeof session.close !== 'function') return
   try {
     await Promise.resolve(session.close())

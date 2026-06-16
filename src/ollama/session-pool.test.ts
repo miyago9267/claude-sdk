@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 
-import type { SDKSession } from '@anthropic-ai/claude-agent-sdk'
+import type { V2Session } from '../shared/query-session.ts'
 
 import { SessionPool, hashHistoryPrefix } from './session-pool.ts'
 
-function makeFakeSession(label: string): SDKSession {
+function makeFakeSession(label: string): V2Session {
   let closed = false
   return {
     get sessionId() {
@@ -25,7 +25,7 @@ function makeFakeSession(label: string): SDKSession {
     get __closed() {
       return closed
     },
-  } as unknown as SDKSession
+  } as unknown as V2Session
 }
 
 describe('SessionPool', () => {
@@ -155,14 +155,22 @@ describe('hashHistoryPrefix', () => {
     expect(h).toMatch(/^[0-9a-f]{64}$/)
   })
 
-  test('image-count differences flip hash, image-content collisions are accepted', () => {
+  test('image-count and image-content both flip hash (no length-collision reuse)', () => {
     const oneImg = hashHistoryPrefix('m', [{ role: 'user', content: 'x', images: ['A'] }])
     const twoImg = hashHistoryPrefix('m', [
       { role: 'user', content: 'x', images: ['A', 'A'] },
     ])
     expect(oneImg).not.toBe(twoImg)
-    // Same count, different bytes → same hash (intentional; documented)
     const sameLenDiff = hashHistoryPrefix('m', [{ role: 'user', content: 'x', images: ['B'] }])
-    expect(oneImg).toBe(sameLenDiff)
+    expect(oneImg).not.toBe(sameLenDiff)
+    const sameBytes = hashHistoryPrefix('m', [{ role: 'user', content: 'x', images: ['A'] }])
+    expect(oneImg).toBe(sameBytes)
+  })
+
+  test('large images differing only past prefix window still collide (documented bound)', () => {
+    const head = 'x'.repeat(4096)
+    const a = hashHistoryPrefix('m', [{ role: 'user', content: 'q', images: [head + 'AAA'] }])
+    const b = hashHistoryPrefix('m', [{ role: 'user', content: 'q', images: [head + 'BBB'] }])
+    expect(a).toBe(b)
   })
 })

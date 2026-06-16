@@ -12,16 +12,15 @@ import { cors } from 'hono/cors'
 import { streamSSE } from 'hono/streaming'
 
 import {
-  unstable_v2_createSession,
+  type Options,
   type PermissionMode,
   type SDKAssistantMessage,
   type SDKMessage,
   type SDKResultMessage,
-  type SDKSession,
-  type SDKSessionOptions,
   type SettingSource,
 } from '@anthropic-ai/claude-agent-sdk'
 
+import { createV2Session, type V2Session } from '../shared/query-session.ts'
 import { RECOMMENDED_SUBPROCESS_ENV } from '../context-manager.ts'
 import {
   extractAssistantBlocks,
@@ -90,7 +89,7 @@ export interface OllamaServerConfig {
    */
   allowedTools?: string[]
   exposedModels?: string[]
-  extraSessionOptions?: Partial<SDKSessionOptions>
+  extraSessionOptions?: Partial<Options>
 }
 
 export function createOllamaServer(
@@ -163,7 +162,7 @@ export function createOllamaServer(
       )
     }
 
-    const session = unstable_v2_createSession({
+    const session = createV2Session({
       model,
       cwd: config.cwd ?? process.cwd(),
       systemPrompt: effectiveSystem,
@@ -385,7 +384,7 @@ function acquireOrCreate(args: {
   effectiveSystem: string | undefined
   history: HistoryMessage[]
   fullPrompt: string
-}): { session: SDKSession; promptToSend: string; reused: boolean } {
+}): { session: V2Session; promptToSend: string; reused: boolean } {
   const { pool, config, model, effectiveSystem, history, fullPrompt } = args
   const lastUserIdx = lastIndexOf(history, (m) => m.role === 'user')
   const prefix = lastUserIdx >= 0 ? history.slice(0, lastUserIdx) : history
@@ -397,7 +396,7 @@ function acquireOrCreate(args: {
       lastUser && typeof lastUser.content === 'string' ? lastUser.content : ''
     return { session: existing, promptToSend, reused: true }
   }
-  const session = unstable_v2_createSession({
+  const session = createV2Session({
     model,
     cwd: config.cwd ?? process.cwd(),
     systemPrompt: effectiveSystem,
@@ -431,7 +430,7 @@ function rememberSession(args: {
   model: string
   history: HistoryMessage[]
   assistantText: string
-  session: SDKSession
+  session: V2Session
 }): void {
   const { pool, model, history, assistantText, session } = args
   const nextPrefix: HistoryMessage[] = [
@@ -510,8 +509,8 @@ function handleStreamingMessage(
   return []
 }
 
-/** SDKSession.close() is a sync void; awaiting + .catch() throws on the result. */
-function safeClose(session: SDKSession): void {
+/** V2Session.close() is a sync void; awaiting + .catch() throws on the result. */
+function safeClose(session: V2Session): void {
   try {
     session.close()
   } catch {
@@ -540,7 +539,7 @@ function validateChatRequest(body: OllamaChatRequest): string | null {
 }
 
 /**
- * Build the SDKSession.send() argument. Pure-text turns send a string (V2's
+ * Build the V2Session.send() argument. Pure-text turns send a string (V2's
  * fast path); image-bearing final turns send a structured SDKUserMessage with
  * image content blocks ahead of the text so the model gets visual context.
  */

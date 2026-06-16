@@ -1,31 +1,44 @@
 /**
  * Context Manager — SDK 層的 context 生命週期管理。
  *
- * 提供三個核心能力：
+ * 提供四個核心能力：
  * 1. Context 大小追蹤 + watermark 觸發
  * 2. 三級壓縮策略：handoff / compact / restart
  * 3. Cache keepalive（防止 API cache TTL 過期）
+ * 4. Rapid-refill breaker（對應 cli.js H77=3，避免短時間反覆觸發 watermark）
  *
  * 與 cli.js 內建 auto-compact 的差異：
  * - cli.js auto-compact 用 9 段式詳細摘要（5-10K tokens）
  * - 這裡的 handoff 用自訂摘要 prompt（目標 2K tokens）
  * - 雙重保險：可同時設 subprocess env CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+ *
+ * Cache TTL 雙模式（對應 cli.js 的 IIY() 判斷）：
+ * - 非 bedrock 路徑：cli 對 prompt cache 加 ttl: "1h" → 預設 1hr TTL + 15min margin
+ * - bedrock 路徑：沒有 1h opt-in，fallback 5min default → 預設 5min TTL + 60s margin
+ * 觸發判斷依 process.env.CLAUDE_CODE_USE_BEDROCK。
  */
 
 import {
   query,
-  unstable_v2_createSession,
-  type SDKSession,
-  type SDKSessionOptions,
   type SDKResultMessage,
   type ModelUsage,
 } from '@anthropic-ai/claude-agent-sdk'
+
+import type { V2Session } from './shared/query-session.ts'
 
 // --- Types ---
 
 export interface ContextManagerConfig {
   /** 觸發壓縮的 context token 門檻。Default: 150_000 */
   watermarkTokens?: number
+  /** 模型 context window（tokens）。提供時觸發動態 watermark 計算。 */
+  modelContextWindow?: number
+  /** 動態 watermark 比例。Default: 0.75 */
+  watermarkRatio?: number
+  /** 動態 watermark 額外扣除的 buffer (對應 cli J77+kg8=13_500)。Default: 13_500 */
+  watermarkBuffer?: number
+  /** 對應 cli env CLAUDE_CODE_AUTO_COMPACT_WINDOW（range 1e5-1e6）。 */
+  autoCompactWindow?: number
   /**
    * 壓縮策略。Default: 'handoff'
    * - handoff: 自訂摘要 → 開新 session（激進，完全可控）
@@ -37,14 +50,25 @@ export interface ContextManagerConfig {
   handoffTargetTokens?: number
   /** 自訂 handoff 摘要 prompt（覆寫內建 prompt） */
   handoffPrompt?: string
+  /** rapid-refill 視窗 ms。Default: 60_000 (1min) */
+  rapidRefillWindowMs?: number
+  /** 視窗內連續幾次 compaction 視為 rapid-refill。Default: 3 */
+  rapidRefillThreshold?: number
 }
 
 export interface CacheKeepaliveConfig {
   /** 是否啟用。Default: true */
   enabled?: boolean
-  /** API cache TTL（ms）。Default: 3_600_000 (1hr) */
+  /**
+   * API cache TTL（ms）。
+   * Default: 環境決定 — 非 bedrock 為 3_600_000 (1hr)，bedrock 為 300_000 (5min)。
+   * 對應 cli.js IIY() 對 ttl: "1h" 的 opt-in 判斷。
+   */
   cacheTTLMs?: number
-  /** 提前量（ms）。Default: 900_000 (15min) */
+  /**
+   * 提前量（ms）。
+   * Default: 環境決定 — 1hr TTL 為 900_000 (15min)，5min TTL 為 60_000 (60s)。
+   */
   marginMs?: number
 }
 
@@ -55,6 +79,10 @@ export interface ContextState {
   lastApiCallAt: number
   /** 總共壓縮次數 */
   totalCompactions: number
+  /** 最近 N 次 compaction 的時間戳（最舊在前），cap 在 5 筆 */
+  recentCompactionTimestamps: number[]
+  /** rapid-refill breaker 已跳閘的次數 */
+  rapidRefillBreakerTrips: number
 }
 
 export interface ModelUsageDeltaResult {
@@ -66,7 +94,7 @@ export interface ModelUsageDeltaResult {
 
 export interface ContextManagerCallbacks {
   /** 取得當前 V2 session（如果有） */
-  getSession: () => SDKSession | null
+  getSession: () => V2Session | null
   /** 取得當前 session ID（V1 resume 用） */
   getSessionId: () => string | null
   /** 重建 session 的 factory（handoff 後調用） */
@@ -152,6 +180,29 @@ function buildDefaultHandoffPrompt(targetTokens: number): string {
   ].join('\n')
 }
 
+// --- Bedrock-aware defaults ---
+
+const RECENT_COMPACTION_TS_CAP = 5
+
+function isBedrockEnv(): boolean {
+  const v = process.env.CLAUDE_CODE_USE_BEDROCK
+  if (!v) return false
+  const lower = v.toLowerCase()
+  return lower === '1' || lower === 'true'
+}
+
+/** 依 CLAUDE_CODE_USE_BEDROCK 決定預設 cache TTL（ms）。 */
+export function detectDefaultCacheTTLMs(): number {
+  return isBedrockEnv() ? 300_000 : 3_600_000
+}
+
+/** 依 TTL 決定預設 margin（ms）。 */
+export function detectDefaultMarginMs(ttlMs: number): number {
+  if (ttlMs >= 3_600_000) return 900_000
+  if (ttlMs <= 300_000) return 60_000
+  return Math.min(900_000, Math.max(60_000, Math.floor(ttlMs / 4)))
+}
+
 // --- Default subprocess env ---
 
 /** 推薦的 subprocess 環境變數（激進 auto-compact） */
@@ -159,10 +210,31 @@ export const RECOMMENDED_SUBPROCESS_ENV = {
   CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '5',
 } as const
 
+/** 動態 watermark 預設比例（佔 modelContextWindow 的比例）。 */
+export const DEFAULT_WATERMARK_RATIO = 0.75
+
+/** 動態 watermark 預設 buffer（對應 cli J77+kg8=13_500 tokens）。 */
+export const DEFAULT_WATERMARK_BUFFER = 13_500
+
+/** 由 contextWindow / ratio / buffer 計算 watermark，clamp 在 >= 10_000。 */
+export function computeDynamicWatermark(
+  contextWindow: number,
+  ratio: number,
+  buffer: number,
+): number {
+  return Math.max(10_000, Math.floor(contextWindow * ratio) - buffer)
+}
+
+const AUTO_COMPACT_WINDOW_MIN = 100_000
+const AUTO_COMPACT_WINDOW_MAX = 1_000_000
+
 // --- Context Manager ---
 
 export class ContextManager {
-  private config: Required<ContextManagerConfig>
+  private config: Required<Omit<ContextManagerConfig, 'modelContextWindow' | 'autoCompactWindow'>> & {
+    modelContextWindow?: number
+    autoCompactWindow?: number
+  }
   private keepaliveConfig: Required<CacheKeepaliveConfig>
   private callbacks: ContextManagerCallbacks
   private state: ContextState
@@ -174,28 +246,64 @@ export class ContextManager {
     keepalive: CacheKeepaliveConfig,
     callbacks: ContextManagerCallbacks,
   ) {
+    if (config.autoCompactWindow !== undefined) {
+      const v = config.autoCompactWindow
+      if (!Number.isInteger(v) || v < AUTO_COMPACT_WINDOW_MIN || v > AUTO_COMPACT_WINDOW_MAX) {
+        throw new Error('autoCompactWindow must be integer in [100000, 1000000]')
+      }
+    }
+
+    const ratio = config.watermarkRatio ?? DEFAULT_WATERMARK_RATIO
+    const buffer = config.watermarkBuffer ?? DEFAULT_WATERMARK_BUFFER
+    const resolvedWatermark = config.watermarkTokens !== undefined
+      ? config.watermarkTokens
+      : config.modelContextWindow !== undefined
+        ? computeDynamicWatermark(config.modelContextWindow, ratio, buffer)
+        : 150_000
+
     this.config = {
-      watermarkTokens: config.watermarkTokens ?? 150_000,
+      watermarkTokens: resolvedWatermark,
+      modelContextWindow: config.modelContextWindow,
+      watermarkRatio: ratio,
+      watermarkBuffer: buffer,
+      autoCompactWindow: config.autoCompactWindow,
       strategy: config.strategy ?? 'handoff',
       handoffTargetTokens: config.handoffTargetTokens ?? 2000,
       handoffPrompt: config.handoffPrompt ?? '',
+      rapidRefillWindowMs: config.rapidRefillWindowMs ?? 60_000,
+      rapidRefillThreshold: config.rapidRefillThreshold ?? 3,
     }
+    const cacheTTLMs = keepalive.cacheTTLMs ?? detectDefaultCacheTTLMs()
     this.keepaliveConfig = {
       enabled: keepalive.enabled ?? true,
-      cacheTTLMs: keepalive.cacheTTLMs ?? 3_600_000,
-      marginMs: keepalive.marginMs ?? 900_000,
+      cacheTTLMs,
+      marginMs: keepalive.marginMs ?? detectDefaultMarginMs(cacheTTLMs),
     }
     this.callbacks = callbacks
     this.state = {
       contextTokensEstimate: 0,
       lastApiCallAt: 0,
       totalCompactions: 0,
+      recentCompactionTimestamps: [],
+      rapidRefillBreakerTrips: 0,
     }
+  }
+
+  /** 取得對應 subprocess 應注入的環境變數（含可選的 auto-compact window）。 */
+  getSubprocessEnv(): Record<string, string> {
+    const env: Record<string, string> = { ...RECOMMENDED_SUBPROCESS_ENV }
+    if (this.config.autoCompactWindow !== undefined) {
+      env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(this.config.autoCompactWindow)
+    }
+    return env
   }
 
   /** 取得當前 state（唯讀） */
   getState(): Readonly<ContextState> {
-    return { ...this.state }
+    return {
+      ...this.state,
+      recentCompactionTimestamps: [...this.state.recentCompactionTimestamps],
+    }
   }
 
   /** 從 SDK result message 更新 context 估算 */
@@ -222,13 +330,15 @@ export class ContextManager {
     if (watermarkTokens <= 0) return false
     if (this.state.contextTokensEstimate < watermarkTokens) return false
 
+    const effective = this.applyRapidRefillBreaker(strategy)
+
     this.callbacks.log(
-      `Context watermark hit: ${this.state.contextTokensEstimate} tokens >= ${watermarkTokens}. Strategy: ${strategy}`,
+      `Context watermark hit: ${this.state.contextTokensEstimate} tokens >= ${watermarkTokens}. Strategy: ${effective}`,
     )
 
-    if (strategy === 'handoff') {
+    if (effective === 'handoff') {
       await this.doHandoff()
-    } else if (strategy === 'compact') {
+    } else if (effective === 'compact') {
       await this.doBuiltinCompact()
     } else {
       await this.callbacks.restartSession()
@@ -238,6 +348,36 @@ export class ContextManager {
 
     this.state.totalCompactions++
     return true
+  }
+
+  /**
+   * 對應 cli.js H77=3 breaker：視窗內反覆觸發壓縮就降級策略。
+   * compact -> handoff -> restart；restart 已是最低不再降級。
+   */
+  private applyRapidRefillBreaker(
+    original: 'handoff' | 'compact' | 'restart',
+  ): 'handoff' | 'compact' | 'restart' {
+    const { rapidRefillWindowMs, rapidRefillThreshold } = this.config
+    const now = Date.now()
+    const cutoff = now - rapidRefillWindowMs
+    const recent = this.state.recentCompactionTimestamps.filter(t => t >= cutoff)
+    recent.push(now)
+    if (recent.length > RECENT_COMPACTION_TS_CAP) recent.splice(0, recent.length - RECENT_COMPACTION_TS_CAP)
+    this.state.recentCompactionTimestamps = recent
+
+    if (recent.length < rapidRefillThreshold) return original
+
+    this.state.rapidRefillBreakerTrips++
+    const downgraded = original === 'compact'
+      ? 'handoff'
+      : original === 'handoff'
+        ? 'restart'
+        : 'restart'
+    this.callbacks.log(
+      `rapid-refill breaker tripped: ${recent.length} compactions in ${rapidRefillWindowMs}ms, downgrading ${original} → ${downgraded}`,
+    )
+    this.state.recentCompactionTimestamps = []
+    return downgraded
   }
 
   // --- Handoff ---
@@ -284,7 +424,7 @@ export class ContextManager {
     this.callbacks.log(`Handoff complete: ${prevContext} → ~${Math.round(summary.length / 4)} tokens`)
   }
 
-  private async extractSummaryV2(session: SDKSession, prompt: string): Promise<string> {
+  private async extractSummaryV2(session: V2Session, prompt: string): Promise<string> {
     let text = ''
     await session.send(prompt)
     for await (const msg of session.stream()) {

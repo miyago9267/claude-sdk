@@ -18,12 +18,12 @@ import type { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 
 import {
-  unstable_v2_createSession,
+  type Options,
   type SDKAssistantMessage,
   type SDKResultMessage,
-  type SDKSession,
-  type SDKSessionOptions,
 } from '@anthropic-ai/claude-agent-sdk'
+
+import { createV2Session, type V2Session } from '../shared/query-session.ts'
 
 import { ContextManager } from '../context-manager.ts'
 import type { ParsedArgs } from './args.ts'
@@ -233,9 +233,9 @@ export async function runTui(opts: TuiOptions): Promise<void> {
 
   let sessionOptions = {
     ...buildSessionOptions({ args: opts.args }),
-    canUseTool: canUseToolCallback as unknown as SDKSessionOptions['canUseTool'],
+    canUseTool: canUseToolCallback as unknown as Options['canUseTool'],
   }
-  let session: SDKSession = unstable_v2_createSession(sessionOptions)
+  let session: V2Session = createV2Session(sessionOptions)
   let sessionId: string | null = null
   let busy = false
 
@@ -314,7 +314,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
       getSessionId: () => sessionId,
       restartSession: async () => {
         await safeCloseSession(session)
-        session = unstable_v2_createSession(sessionOptions)
+        session = createV2Session(sessionOptions)
         sessionId = null
       },
       log,
@@ -711,9 +711,9 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           sendToTui({ type: 'error', message: `unknown permission-mode: ${mode}` })
           return
         }
-        sessionOptions = { ...sessionOptions, permissionMode: mode as SDKSessionOptions['permissionMode'] }
+        sessionOptions = { ...sessionOptions, permissionMode: mode as Options['permissionMode'] }
         await safeCloseSession(session)
-        session = unstable_v2_createSession(sessionOptions)
+        session = createV2Session(sessionOptions)
         sessionId = null
         resetSessionCostTracking()
         sendToTui({ type: 'status', message: `permission-mode -> ${mode} (session reset)` })
@@ -834,7 +834,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           }
         }
         await safeCloseSession(session)
-        session = unstable_v2_createSession(sessionOptions)
+        session = createV2Session(sessionOptions)
         sessionId = null
         logicalId = chosenId
         pendingPrefix = store.formatHistoryPrefix(chosenId)
@@ -861,9 +861,9 @@ export async function runTui(opts: TuiOptions): Promise<void> {
           systemPrompt: turnOff
             ? sessionOptions.systemPrompt
             : selfModSystemPrompt(sessionOptions.systemPrompt, root),
-        } as SDKSessionOptions
+        } as Options
         await safeCloseSession(session)
-        session = unstable_v2_createSession(sessionOptions)
+        session = createV2Session(sessionOptions)
         sessionId = null
         sendToTui({
           type: 'status',
@@ -873,7 +873,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
       }
       case '/clear':
         await safeCloseSession(session)
-        session = unstable_v2_createSession(sessionOptions)
+        session = createV2Session(sessionOptions)
         sessionId = null
         resetSessionCostTracking()
         sendToTui({ type: 'status', message: 'session reset', model: sessionOptions.model })
@@ -902,7 +902,7 @@ export async function runTui(opts: TuiOptions): Promise<void> {
         }
         sessionOptions = { ...sessionOptions, model: resolved }
         await safeCloseSession(session)
-        session = unstable_v2_createSession(sessionOptions)
+        session = createV2Session(sessionOptions)
         sessionId = null
         resetSessionCostTracking()
         sendBanner()
@@ -914,9 +914,9 @@ export async function runTui(opts: TuiOptions): Promise<void> {
       }
       case '/cwd':
         if (arg) {
-          sessionOptions = { ...sessionOptions, cwd: arg } as SDKSessionOptions
+          sessionOptions = { ...sessionOptions, cwd: arg } as Options
           await safeCloseSession(session)
-          session = unstable_v2_createSession(sessionOptions)
+          session = createV2Session(sessionOptions)
           sessionId = null
           resetSessionCostTracking()
           sendBanner()

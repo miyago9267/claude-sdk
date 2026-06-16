@@ -10,7 +10,7 @@
  * the last user message"; miss means "spawn fresh and replay full prompt".
  *
  * Pool semantics:
- *   acquire(prefixHash) → SDKSession | null  (LRU-promotes on hit)
+ *   acquire(prefixHash) → V2Session | null  (LRU-promotes on hit)
  *   register(nextHash, session)               (called after each turn ends;
  *                                              moves the session to the new
  *                                              hash key for the next call)
@@ -25,12 +25,11 @@
 
 import { createHash } from 'node:crypto'
 
-import type { SDKSession } from '@anthropic-ai/claude-agent-sdk'
-
 import type { HistoryMessage } from '../shared/messages.ts'
+import type { V2Session } from '../shared/query-session.ts'
 
 export interface PooledSession {
-  session: SDKSession
+  session: V2Session
   lastTouchedAt: number
 }
 
@@ -56,7 +55,7 @@ export class SessionPool {
   }
 
   /** Look up a session by prefix hash; promotes to MRU on hit. */
-  acquire(prefixHash: string): SDKSession | null {
+  acquire(prefixHash: string): V2Session | null {
     this.purgeExpired()
     const entry = this.entries.get(prefixHash)
     if (!entry) return null
@@ -71,7 +70,7 @@ export class SessionPool {
    * session was previously stored under a different hash, the old entry is
    * removed so each session occupies exactly one slot.
    */
-  register(nextPrefixHash: string, session: SDKSession): void {
+  register(nextPrefixHash: string, session: V2Session): void {
     for (const [h, e] of this.entries) {
       if (e.session === session && h !== nextPrefixHash) {
         this.entries.delete(h)
@@ -85,7 +84,7 @@ export class SessionPool {
   }
 
   /** Drop+close a session by reference (typically the error path). */
-  evictBySession(session: SDKSession): void {
+  evictBySession(session: V2Session): void {
     for (const [h, e] of this.entries) {
       if (e.session === session) {
         this.evictHash(h)
@@ -131,12 +130,20 @@ export class SessionPool {
 }
 
 /**
- * Stable hash of (model, history-prefix). Used as pool key. Image bytes are
- * collapsed to a count to keep canonical form bounded; two different image
- * payloads with the same length will collide, but the worst-case is that we
- * reuse a session whose model already saw a different image — harmless since
- * the new request still ships its own image as the next user turn.
+ * Stable hash of (model, history-prefix). Used as pool key. Images are
+ * fingerprinted by sha256 over a bounded prefix + length so different image
+ * payloads with matching length no longer collide into the same session.
  */
+const IMAGE_FINGERPRINT_PREFIX_CHARS = 4096
+
+function fingerprintImage(image: string): [string, number] {
+  const prefix = image.length > IMAGE_FINGERPRINT_PREFIX_CHARS
+    ? image.slice(0, IMAGE_FINGERPRINT_PREFIX_CHARS)
+    : image
+  const digest = createHash('sha256').update(prefix).digest('hex').slice(0, 16)
+  return [digest, image.length]
+}
+
 export function hashHistoryPrefix(model: string, messages: HistoryMessage[]): string {
   const canonical = JSON.stringify({
     model,
@@ -146,13 +153,13 @@ export function hashHistoryPrefix(model: string, messages: HistoryMessage[]): st
       m.toolCalls?.map((tc) => [tc.name, tc.arguments]) ?? null,
       m.toolName ?? null,
       m.toolCallId ?? null,
-      m.images?.length ?? 0,
+      m.images?.map(fingerprintImage) ?? null,
     ]),
   })
   return createHash('sha256').update(canonical).digest('hex')
 }
 
-function safeClose(session: SDKSession): void {
+function safeClose(session: V2Session): void {
   try {
     session.close()
   } catch {
