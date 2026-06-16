@@ -1,5 +1,10 @@
 # SDK 魔改懶人包
 
+> ⚠️ **已過時（歷史保留）。** 本文件描述的是 0.2.x 時代對 `sdk.mjs` / `cli.js` 的逆向 patch。
+> 自 agent-sdk **0.3.x 遷移**起,這些 patch 全部移除:持久 session 改用公開 `query()` streaming-input
+> API,prompt cache 為原生。實作見 `src/shared/query-session.ts`,背景見 memory `project_sdk_03_migration`。
+> 以下內容僅作歷史記錄。
+
 > 基於 `@anthropic-ai/claude-agent-sdk` v0.2.77，6 刀改完。
 
 ## 一句話

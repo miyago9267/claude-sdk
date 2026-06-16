@@ -1,10 +1,16 @@
 # @miyago/claude-sdk
 
-Drop-in wrapper for [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript) that patches V2 persistent session support and adds context lifecycle management.
+Subscription-backed wrapper around [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript) (0.3.x). Three surfaces:
 
-**Problem:** The official SDK's V1 `query()` spawns a new CLI process per call. Runtime system-reminder injection varies across processes, breaking prompt cache prefix match. Cache efficiency stays at ~25%.
+- **Library** — re-exports the agent SDK plus a context-lifecycle manager.
+- **API bridge** — an OpenAI-compatible (`/v1/chat/completions`) + Ollama-native (`/api/*`) HTTP server, so any harness (OpenAI SDK, LiteLLM, Aider, Continue, GitHub Copilot Chat…) can drive Claude on your Pro/Max subscription.
+- **TUI** — a bonus full-screen terminal front-end.
 
-**Solution:** Patch the V2 `unstable_v2_createSession()` API to accept full options (settingSources, cwd, systemPrompt, mcpServers, etc.), keep the CLI process alive across messages, and let cache accumulate naturally. Measured efficiency: **82-100%** (avg 91%).
+> **History:** versions ≤ 1.6.0 pinned agent-sdk 0.2.x and reverse-engineered a `sdk.mjs` patch to make the experimental `unstable_v2_createSession()` persistent session pass full options and hit the prompt cache. As of the 0.3.x migration that patch is **gone** — the persistent session is now the public `query()` streaming-input API, and SDK prompt caching is native. The old RE notes live in `docs/v2-spec/` and `docs/learning/` for the record.
+
+## Why a persistent session
+
+The classic `query()` one-shot spawns a fresh CLI process per call; runtime system-reminder injection varies across processes, so the prompt-cache prefix rarely matches (cache efficiency ~25%). Keeping one process alive across turns makes the prefix byte-identical, so it cache-reads instead of re-writing. Measured on the migrated 0.3.x adapter: **88% (turn 2) → 100% (turn 3)** efficiency.
 
 ## Install
 
@@ -12,89 +18,51 @@ Drop-in wrapper for [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthro
 bun add @miyago/claude-sdk
 ```
 
-The `postinstall` script automatically patches `sdk.mjs` in `node_modules`.
-For the 5 optional `cli.js` patches (requires beautify), run manually:
-
-```bash
-bash scripts/patch.sh
-```
+No postinstall, no patching — it consumes the official SDK as-is.
 
 ## Quick Start
 
-### V2 Persistent Session (recommended)
+### Persistent session (streaming input)
+
+The agent SDK's `query()` accepts an `AsyncIterable` of user messages and returns a `Query` you can feed over time — one live process, cache accumulates across turns.
 
 ```typescript
-import { unstable_v2_createSession } from '@miyago/claude-sdk'
+import { query, type SDKUserMessage } from '@miyago/claude-sdk'
 
-const session = unstable_v2_createSession({
-  model: 'claude-sonnet-4-6',
-  cwd: process.cwd(),
-  systemPrompt: 'You are a helpful assistant.',
-  settingSources: ['project', 'local'],  // load CLAUDE.md
-  maxTurns: 10,
-  permissionMode: 'bypassPermissions',
-  allowDangerouslySkipPermissions: true,
-})
-
-// Send messages — same CLI process, cache accumulates
-await session.send('Hello!')
-for await (const msg of session.stream()) {
-  if (msg.type === 'assistant') {
-    console.log(msg.message?.content)
-  }
-  if (msg.type === 'result') {
-    console.log('Done:', msg.session_id)
-  }
+async function* turns(): AsyncGenerator<SDKUserMessage> {
+  yield { type: 'user', message: { role: 'user', content: 'Hello!' }, parent_tool_use_id: null }
+  // yield more messages later to continue the same cached session
 }
-
-// Send another message — cache hit
-await session.send('Follow up question')
-for await (const msg of session.stream()) {
-  // ...
-}
-
-// Clean up
-session.close()
-```
-
-### V1 Query (fallback)
-
-```typescript
-import { query } from '@miyago/claude-sdk'
 
 const q = query({
-  prompt: 'Hello!',
+  prompt: turns(),
   options: {
     model: 'claude-sonnet-4-6',
-    maxTurns: 5,
     cwd: process.cwd(),
+    systemPrompt: 'You are a helpful assistant.',
+    settingSources: ['project', 'local'], // load CLAUDE.md
+    permissionMode: 'bypassPermissions',
   },
 })
 
 for await (const msg of q) {
-  if (msg.type === 'result') {
-    console.log('Session:', msg.session_id)
-  }
+  if (msg.type === 'assistant') console.log(msg.message?.content)
+  if (msg.type === 'result') console.log('done:', msg.session_id)
 }
 ```
 
+The bridge wraps this pattern in an internal `createV2Session()` adapter (`send` / `stream` / `close`) backed by a history-keyed session pool; see `src/shared/query-session.ts`.
+
 ### Context Manager
 
-Tracks context size, auto-compacts when approaching limits, and keeps cache alive with periodic pings.
+Tracks context size, auto-compacts near limits, and keeps the cache alive with periodic pings.
 
 ```typescript
 import { ContextManager, RECOMMENDED_SUBPROCESS_ENV } from '@miyago/claude-sdk/context'
 
 const manager = new ContextManager(
-  {
-    watermarkTokens: 150_000,  // trigger at 150K tokens
-    strategy: 'compact',       // 'handoff' | 'compact' | 'restart'
-  },
-  {
-    enabled: true,
-    cacheTTLMs: 3_600_000,     // 1 hour (Claude Max)
-    marginMs: 900_000,         // ping 15min before expiry
-  },
+  { watermarkTokens: 150_000, strategy: 'compact' },
+  { enabled: true, cacheTTLMs: 3_600_000, marginMs: 900_000 }, // 1h TTL (Claude Max)
   {
     getSession: () => session,
     getSessionId: () => sessionId,
@@ -105,264 +73,107 @@ const manager = new ContextManager(
   },
 )
 
-// Start cache keepalive timer
 manager.startKeepalive()
-
-// After each interaction
 manager.updateFromResult(resultMessage)
-await manager.checkWatermark()  // auto-compacts if needed
-
-// Cleanup
+await manager.checkWatermark() // auto-compacts if needed
 manager.stopKeepalive()
 ```
 
-### Subprocess Environment
+`RECOMMENDED_SUBPROCESS_ENV` (pass into the session `env`) sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` and `CLAUDE_CODE_REMOTE=1` to keep the cache prefix stable.
 
-Use `RECOMMENDED_SUBPROCESS_ENV` when spawning V2 sessions to optimize token usage:
+## API bridge (OpenAI + Ollama)
 
-```typescript
-import { RECOMMENDED_SUBPROCESS_ENV } from '@miyago/claude-sdk/context'
-
-const session = unstable_v2_createSession({
-  // ...
-  env: { ...process.env, ...RECOMMENDED_SUBPROCESS_ENV },
-})
-```
-
-This sets:
-- `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=5` -- aggressive auto-compact
-- `CLAUDE_CODE_REMOTE=1` -- skip gitStatus injection (eliminates a cache bust source)
-
-## What Gets Patched
-
-### sdk.mjs (5 patches, auto-applied on install)
-
-The official V2 `unstable_v2_createSession()` hardcodes many options. These patches unlock them:
-
-| # | Option | Before | After |
-|---|--------|--------|-------|
-| 1 | `settingSources` | `[]` | `opts.settingSources ?? []` |
-| 2 | `cwd` | `process.cwd()` | `opts.cwd` |
-| 3 | `thinkingConfig`, `maxTurns`, `maxBudgetUsd` | `void 0` | from opts |
-| 4 | `mcpServers` | `{}` | from opts (CLI-side filtered) |
-| 5 | `systemPrompt`, SDK MCP routing | `new Map`, no initConfig | from opts |
-
-### cli.js (5 patches, manual after beautify)
-
-| # | What | Why |
-|---|------|-----|
-| 1 | Context overflow margin 1000 -> 200 | Maximize usable context window |
-| 2 | Fork pruning: keep last 5 turns | Prevent exponential context growth in agent chains |
-| 3 | Subagent pruning: keep last 10 messages | Reduce subagent cold start cost |
-| 4 | Enable prompt cache for SDK querySource | **Biggest impact** -- official only enables for REPL |
-| 5 | Skip non-streaming retry if content received | Avoid 2x token waste on stream failure |
-
-## How Cache Efficiency Works
-
-```
-V1 query() -- new process each call
-  system prompt (15K) -> cache READ
-  messages (45K)      -> cache WRITE (content differs each spawn)
-  efficiency: ~25%
-
-V2 createSession() -- persistent process
-  system prompt (15K) -> cache READ
-  messages (45K)      -> cache READ (same process = stable content)
-  only new content    -> cache WRITE
-  efficiency: 82-100%
-```
-
-The root cause is runtime system-reminder injection (gitStatus, readFileState diffs, memory mtimes). When the CLI process stays alive, these injections remain byte-for-byte identical, so the cache prefix matches.
-
-## Upgrading the Official SDK
-
-When `@anthropic-ai/claude-agent-sdk` releases a new version:
+Run a local server that speaks both the OpenAI Chat Completions wire format and the Ollama-native protocol, on Ollama's default port (11434):
 
 ```bash
-# 1. Update version
-bun add @anthropic-ai/claude-agent-sdk@latest
-
-# 2. Check if sdk.mjs patches still apply
-bash scripts/patch-v2.sh --check
-
-# 3. If patches fail, use anchor strings to relocate
-#    See docs/leaarning/sdk-anchor-index-v76.md
-
-# 4. For cli.js patches, beautify first
-bash scripts/patch.sh
-
-# 5. Run tests
-bun test
-```
-
-Key anchor strings for relocating minified functions:
-
-| Function | Anchor String |
-|----------|--------------|
-| SDKSession class | `"Cannot send to closed session"` |
-| ProcessTransport | `"--output-format"` |
-| Query class | `"pendingControlResponses"` |
-| Cache control | `"prompt-caching-scope-2026-01-05"` |
-
-Full anchor index: [`docs/leaarning/sdk-anchor-index-v76.md`](docs/leaarning/sdk-anchor-index-v76.md)
-
-## Ollama-Compatible Bridge
-
-Expose Claude as a local Ollama server so IDE clients that speak the Ollama
-HTTP API (GitHub Copilot Chat / Manage Models, AI Toolkit, etc.) can pick
-Claude as their model. The bridge listens on Ollama's default port (11434) so
-no client-side configuration tweaks are needed beyond pointing at the URL.
-
-```bash
-# Standalone server (default port 11434, falls back to 41434 if busy)
-claude-sdk --ollama
-
-# Or programmatic
+claude-sdk --ollama                 # port 11434
+claude-sdk --ollama --port 11500    # custom port
 ```
 
 ```typescript
 import { serveOllamaBridge } from '@miyago/claude-sdk/ollama'
 
-serveOllamaBridge({
-  port: 11434,
-  config: { defaultModel: 'claude-sonnet-4-6' },
-})
+serveOllamaBridge({ port: 11434, config: { defaultModel: 'claude-sonnet-4-6' } })
 ```
+
+Point any OpenAI-compatible harness at it (the bridge ignores the API key and authenticates via your subscription OAuth):
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:11434/v1", api_key="dummy")
+client.chat.completions.create(model="claude-sonnet-4-6", messages=[...])
+```
+
+Endpoints:
+
+- OpenAI-compat: `GET /v1/models`, `POST /v1/chat/completions` (SSE streaming)
+- Ollama-native: `GET /api/tags`, `POST /api/show`, `POST /api/chat`
+
+Each chat call runs a full server-side agent turn in the bridge's cwd (built-in Read/Write/Bash/Edit/Glob/Grep), returning the final text. Sessions are pooled by client-history prefix hash so consecutive turns of the same conversation reuse a live, cache-warm process. A model the account can't access (e.g. `claude-fable-5`) returns the upstream error verbatim rather than a faked success.
+
+### GitHub Copilot Chat
+
+1. Run `claude-sdk --ollama`.
+2. VS Code → Copilot Chat → **Manage Models** → **Ollama** → point at the URL.
+3. Pick `claude-opus-4-8` / `claude-sonnet-4-6` / etc. Chat and Agent mode both route through the bridge.
+
+See `docs/specs/ollama-bridge/SPEC.md` for ADRs.
+
+## CLI
+
+`claude-sdk` is a thin launcher for the two runtime surfaces; everything else is the library.
 
 ```bash
-# What Copilot does at startup
-curl http://127.0.0.1:11434/api/tags
-curl http://127.0.0.1:11434/api/show -d '{"model":"claude-sonnet-4-6"}'
-
-# Non-streaming chat (Phase 1; streaming + session pool land in Phase 2)
-curl http://127.0.0.1:11434/api/chat \
-  -H 'content-type: application/json' \
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "stream": false,
-    "messages": [{"role": "user", "content": "Hi"}]
-  }'
+claude-sdk --ollama [--port n] [--host addr] [--model id]   # HTTP bridge
+claude-sdk --tui [--model sonnet]                           # bonus TUI
+claude-sdk --help | --version
 ```
 
-### Hooking up VS Code GitHub Copilot Chat
-
-1. Run `claude-sdk --ollama` in a terminal.
-2. In VS Code, open the Copilot Chat view → **Manage Models** → **Ollama**.
-3. The model picker should list `claude-opus-4-7`, `claude-sonnet-4-6`,
-   `claude-haiku-4-5` etc. Pick one — Copilot will route both Chat and Agent
-   mode requests through the bridge.
-
-Tool calling is advertised via `/api/show` capabilities, so models stay
-visible in Agent mode. See `docs/specs/ollama-bridge/SPEC.md` for ADRs and
-roadmap (streaming, session pool, thinking forwarding).
-
-## CLI Harness
-
-`claude-sdk` mirrors the official `claude` CLI args where possible — same
-flag names (`--model`, `--system-prompt`, `--add-dir`, `--allowedTools`,
-`--permission-mode`, `--output-format`, `-p / --print`, `-c / --continue`...)
-so muscle memory and existing scripts carry over. Unsupported official
-flags (`--mcp-config`, `--ide`, `--worktree`, agent subcommands etc.) are
-parsed and reported as ignored rather than silently dropped.
-
-```bash
-# Interactive REPL (auto context-compact at watermark)
-claude-sdk
-
-# REPL seeded with a first prompt (matches official behaviour)
-claude-sdk "Walk me through this repo"
-
-# One-shot, official -p semantics
-claude-sdk -p "What is 2+2?"
-claude-sdk -p --output-format json "Summarise" | jq .
-echo "Summarise" | claude-sdk -p
-
-# Ollama-compatible HTTP bridge
-claude-sdk --ollama
-```
-
-REPL slash commands: `/help`, `/exit`, `/clear`, `/model <id>`, `/cwd [path]`,
-`/compact`, `/status`. Output formats `text` (default), `json`, `stream-json`
-match the official CLI's `--output-format` semantics.
-
-claude-sdk-only additions: `--tui`, `--ollama`, `--port`, `--host`,
-`--watermark`, `--cwd`.
+It accepts the official `claude` flags where relevant (`--model`, `--system-prompt`, `--add-dir`, `--allowedTools`, `--permission-mode`, `--cwd`, `-c/--continue`, `-r/--resume`…); unsupported official flags are parsed and reported as ignored.
 
 ### Bubbletea TUI (`--tui`)
 
-Optional full-screen TUI front-end written in Go (bubbletea + bubbles +
-lipgloss). The TS process keeps running the LLM session and streams events
-over NDJSON to a spawned Go binary that handles all rendering and input.
-
-Build the binary once (requires Go 1.24+):
+Optional Go (bubbletea) front-end. The TS process runs the session and streams NDJSON to a spawned Go binary that handles rendering/input. Build once (Go 1.24+):
 
 ```bash
 bash scripts/build-tui.sh   # writes ./bin/claude-sdk-tui
 ```
 
-Then:
-
-```bash
-claude-sdk --tui                   # alt-screen TUI session
-claude-sdk --tui --model sonnet    # any non-serve flag carries through
-```
-
-Header shows model / context tokens / cumulative cost / compactions; footer
-shows cwd + busy state. Key bindings: Enter to send, slash commands inline
-(`/help`, `/clear`, `/model`, `/cwd`, `/compact`, `/status`, `/exit`),
-PgUp/PgDn to scroll the transcript, Ctrl+C / Ctrl+D to exit.
-
-The Go binary is platform-specific and not shipped in the npm package; build
-it locally. See `cmd/tui/` for the IPC schema.
+The binary is platform-specific and not shipped in the npm package. See `cmd/tui/` for the IPC schema.
 
 ## Exports
 
 ```typescript
-// Main entry -- re-exports everything from @anthropic-ai/claude-agent-sdk
-import { query, unstable_v2_createSession, tool } from '@miyago/claude-sdk'
+// Main entry — re-exports @anthropic-ai/claude-agent-sdk (query, tool, types…)
+import { query, tool } from '@miyago/claude-sdk'
 
 // Context management
-import {
-  ContextManager,
-  RECOMMENDED_SUBPROCESS_ENV,
-  diffCumulativeModelUsage,
-} from '@miyago/claude-sdk/context'
+import { ContextManager, RECOMMENDED_SUBPROCESS_ENV, diffCumulativeModelUsage } from '@miyago/claude-sdk/context'
 
-// Ollama bridge (transformers + Hono server)
-import {
-  buildPromptFromOllamaMessages,
-  buildShowResponse,
-  buildTagsResponse,
-  createOllamaServer,
-  serveOllamaBridge,
-} from '@miyago/claude-sdk/ollama'
+// Ollama / OpenAI bridge
+import { serveOllamaBridge, createOllamaServer, buildTagsResponse } from '@miyago/claude-sdk/ollama'
 
-// Generic conversation history primitives (shared across protocol adapters)
-import {
-  buildPromptFromHistory,
-  extractAssistantBlocks,
-  type HistoryMessage,
-} from '@miyago/claude-sdk/shared'
+// Shared conversation-history primitives
+import { buildPromptFromHistory, extractAssistantBlocks, type HistoryMessage } from '@miyago/claude-sdk/shared'
 
-// CLI primitives (also accessible via `bin: claude-sdk`)
-import { runOneShot, runRepl, parseArgs } from '@miyago/claude-sdk/cli'
+// CLI primitives (also via `bin: claude-sdk`)
+import { parseArgs, HELP_TEXT, runTui } from '@miyago/claude-sdk/cli'
 ```
 
-## Important Notes
+## Notes
 
-- `result.modelUsage` is a **cumulative session snapshot**, not a per-turn delta. Use `diffCumulativeModelUsage()` to compute deltas.
-- V2 API is `unstable_*` -- may change in future SDK versions. Design with V1 fallback.
-- Cache TTL is 5 minutes (default) or 1 hour (Claude Max). Use `ContextManager.startKeepalive()` to prevent expiry.
-- Each V2 session holds one Node.js process (~100-200MB RAM).
+- `result.modelUsage` is a **cumulative session snapshot**, not a per-turn delta — use `diffCumulativeModelUsage()`.
+- Cache TTL is 5 minutes (default) or 1 hour (Claude Max); `ContextManager.startKeepalive()` prevents expiry.
+- Each persistent session holds one Node.js process (~100–200MB RAM).
 
 ## Research
 
-This package is built on reverse engineering of the Claude Code CLI binary. Full documentation:
+Historical reverse-engineering of the Claude Code CLI (0.2.x era), kept for context:
 
-- [Reverse Engineering Report](docs/leaarning/sdk-reverse-engineering-v76.md) -- end-to-end flow analysis (Stages A-F)
-- [Anchor Index](docs/leaarning/sdk-anchor-index-v76.md) -- minified symbol mapping for version upgrades
-- [V2 Patch Engineering Notes](docs/v2-spec/v2-persistent-session-工程筆記.md) -- patch design and idempotency
-- [System-Reminder Investigation](docs/leaarning/system-reminder-調查報告.md) -- all 30+ injection types documented
+- [Reverse Engineering Report](docs/leaarning/sdk-reverse-engineering-v76.md)
+- [Anchor Index](docs/leaarning/sdk-anchor-index-v76.md)
+- [V2 Persistent Session Notes](docs/v2-spec/v2-persistent-session-工程筆記.md)
+- [System-Reminder Investigation](docs/leaarning/system-reminder-調查報告.md)
 
 ## License
 

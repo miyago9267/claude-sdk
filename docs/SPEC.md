@@ -1,5 +1,9 @@
 # @lovely-office/sdk -- 規格文件
 
+> ⚠️ **部分過時。** 本規格的 patch / fork 段落屬 0.2.x 時代;自 0.3.x 遷移起 patch 已全數移除,
+> 持久 session 改用公開 `query()` streaming-input。三大對外管道現為:library import、OpenAI/Ollama
+> bridge、bonus TUI。最新事實以 README 與 `docs/specs/` 為準。
+
 ## 狀態
 
 - updated: 2026-03-20
