@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { RuntimeEventBus, type RuntimeEvent } from './events.ts'
-import { AuditRecorder, FileAuditStore, InMemoryAuditStore } from './audit.ts'
+import { AuditRecorder, FileAuditStore, InMemoryAuditStore, exportAuditJsonl } from './audit.ts'
 
 const event: RuntimeEvent = {
   eventId: 'event-1',
@@ -72,3 +72,75 @@ describe('FileAuditStore', () => {
     recorder.stop()
   })
 })
+
+describe('audit query and export', () => {
+  test('filters a timeline by run, event type, time range and limit', async () => {
+    const store = new InMemoryAuditStore()
+    await store.append(record('run-1', 'run.queued', '2026-08-24T00:00:00.000Z'))
+    await store.append(record('run-1', 'run.completed', '2026-08-24T00:00:02.000Z'))
+    await store.append(record('run-2', 'run.failed', '2026-08-24T00:00:03.000Z'))
+
+    const result = await store.query({
+      runId: 'run-1',
+      eventTypes: ['run.completed'],
+      from: '2026-08-24T00:00:01.000Z',
+      to: '2026-08-24T00:00:03.000Z',
+      limit: 1,
+    })
+
+    expect(result).toHaveLength(1)
+    expect(result[0]?.eventType).toBe('run.completed')
+  })
+
+  test('exports filtered audit records as JSONL', async () => {
+    const store = new InMemoryAuditStore()
+    await store.append(record('run-1', 'run.queued', '2026-08-24T00:00:00.000Z'))
+    await store.append(record('run-2', 'run.failed', '2026-08-24T00:00:01.000Z'))
+
+    const lines = await exportAuditJsonl(store, { runId: 'run-2' })
+
+    expect(lines.trim().split('\n')).toHaveLength(1)
+    expect(JSON.parse(lines).runId).toBe('run-2')
+  })
+
+  test('queries child traces by parent run id', async () => {
+    const store = new InMemoryAuditStore()
+    await store.append({
+      auditId: 'child-start',
+      version: 1,
+      recordedAt: '2026-08-24T00:00:00.000Z',
+      eventType: 'delegation.started',
+      runId: 'child-1',
+      event: {
+        type: 'delegation.started',
+        eventId: 'child-start',
+        runId: 'child-1',
+        occurredAt: '2026-08-24T00:00:00.000Z',
+        parentRunId: 'parent-1',
+        childRunId: 'child-1',
+        taskId: 'task-1',
+      },
+    })
+
+    expect(await store.query({ parentRunId: 'parent-1' })).toHaveLength(1)
+    expect(await store.query({ parentRunId: 'other-parent' })).toHaveLength(0)
+  })
+})
+
+function record(runId: string, eventType: 'run.queued' | 'run.completed' | 'run.failed', occurredAt: string) {
+  return {
+    auditId: `${runId}-${eventType}`,
+    version: 1 as const,
+    recordedAt: occurredAt,
+    eventType,
+    runId,
+    event: {
+      eventId: `${runId}-${eventType}`,
+      runId,
+      occurredAt,
+      type: eventType,
+      ...(eventType === 'run.failed' ? { error: 'failed', run: { runId } } : {}),
+      ...(eventType !== 'run.failed' ? { run: { runId } } : {}),
+    },
+  } as never
+}

@@ -9,9 +9,17 @@ export {
   AuditRecorder,
   FileAuditStore,
   InMemoryAuditStore,
+  exportAuditJsonl,
+  queryAudit,
   type AuditRecord,
+  type AuditQuery,
   type AuditStore,
 } from './audit.ts'
+
+export {
+  RuntimeMetricsCollector,
+  type RuntimeMetricsSnapshot,
+} from './observability.ts'
 
 export * from './config/index.ts'
 

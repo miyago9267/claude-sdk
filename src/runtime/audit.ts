@@ -12,10 +12,20 @@ export interface AuditRecord {
   event: RuntimeEvent
 }
 
+export interface AuditQuery {
+  runId?: string
+  parentRunId?: string
+  eventTypes?: RuntimeEvent['type'][]
+  from?: string
+  to?: string
+  limit?: number
+}
+
 export interface AuditStore {
   append(record: AuditRecord): Promise<void>
   list(): Promise<AuditRecord[]>
   listByRun(runId: string): Promise<AuditRecord[]>
+  query?(query: AuditQuery): Promise<AuditRecord[]>
 }
 
 export class InMemoryAuditStore implements AuditStore {
@@ -31,6 +41,10 @@ export class InMemoryAuditStore implements AuditStore {
 
   async listByRun(runId: string): Promise<AuditRecord[]> {
     return (await this.list()).filter((record) => record.runId === runId)
+  }
+
+  async query(query: AuditQuery): Promise<AuditRecord[]> {
+    return filterAuditRecords(await this.list(), query)
   }
 }
 
@@ -65,6 +79,19 @@ export class FileAuditStore implements AuditStore {
   async listByRun(runId: string): Promise<AuditRecord[]> {
     return (await this.list()).filter((record) => record.runId === runId)
   }
+
+  async query(query: AuditQuery): Promise<AuditRecord[]> {
+    return filterAuditRecords(await this.list(), query)
+  }
+}
+
+export async function queryAudit(store: AuditStore, query: AuditQuery = {}): Promise<AuditRecord[]> {
+  return store.query ? store.query(query) : store.list().then((items) => filterAuditRecords(items, query))
+}
+
+export async function exportAuditJsonl(store: AuditStore, query: AuditQuery = {}): Promise<string> {
+  const records = await queryAudit(store, query)
+  return records.map((record) => JSON.stringify(record)).join('\n') + (records.length > 0 ? '\n' : '')
 }
 
 export class AuditRecorder {
@@ -115,4 +142,24 @@ function isSensitiveKey(key: string): boolean {
 
 function cloneRecord(record: AuditRecord): AuditRecord {
   return JSON.parse(JSON.stringify(record)) as AuditRecord
+}
+
+function filterAuditRecords(records: AuditRecord[], query: AuditQuery): AuditRecord[] {
+  const eventTypes = query.eventTypes ? new Set(query.eventTypes) : undefined
+  const filtered = records.filter((record) => {
+    if (query.runId && record.runId !== query.runId) return false
+    if (eventTypes && !eventTypes.has(record.eventType)) return false
+    if (query.from && record.recordedAt < query.from) return false
+    if (query.to && record.recordedAt > query.to) return false
+    if (query.parentRunId && !hasParentRun(record, query.parentRunId)) return false
+    return true
+  })
+  return query.limit === undefined ? filtered : filtered.slice(0, Math.max(0, query.limit))
+}
+
+function hasParentRun(record: AuditRecord, parentRunId: string): boolean {
+  const event = record.event as RuntimeEvent & { parentRunId?: string }
+  if (event.parentRunId === parentRunId) return true
+  if ('run' in event && event.run.parentRunId === parentRunId) return true
+  return false
 }

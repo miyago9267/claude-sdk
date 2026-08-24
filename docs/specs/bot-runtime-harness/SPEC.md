@@ -114,6 +114,8 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
 - Delegation control plane：`DelegationManager` 提供 parent/child run relationship、
   background handles、timeout cancellation、partial-failure aggregation 與 result
   routing events。
+- Observability foundation：audit query filters、parent/child trace lookup、JSONL
+  export，以及 event-based runtime metrics snapshot。
 - CI/CD Agent SDK update 與 SessionStart version check。
 
 目前 runtime 元件已分散存在，但缺少 `BotRuntime` composition root 將它們串成
@@ -485,7 +487,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 
 - [x] Add provider/model fallback and rate-limit handling。
 - [ ] Add sandbox/worktree adapters and resource limits。
-- [ ] Add queryable traces, metrics and audit export。
+- [x] Add queryable traces, metrics and audit export。
 - [x] Add crash recovery and abandoned-run repair tooling。
 - [ ] Review and remove optimize utilities replaced by official SDK features。
 
@@ -509,6 +511,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - `src/runtime/delivery.ts` - channel-independent delivery contract, router and in-memory adapter。
 - `src/runtime/bot-runtime.ts` - BotRuntime composition root and common bot execution path。
 - `src/runtime/delegation.ts` - parent/child delegation manager and result aggregation。
+- `src/runtime/observability.ts` - event-based runtime metrics collector。
 
 ### Planned modules
 
@@ -542,6 +545,10 @@ an optional `RunStore` and exposes `repairAbandonedRuns()` for startup repair;
 handlers and in-flight SDK queries are not resumed automatically after process
 restart. Hosts must invoke repair before accepting new work and decide whether
 abandoned runs should be retried or surfaced for operator handling.
+
+Observability limitations: the initial metrics collector is in-memory and event
+counter based; provider token/cache usage and long-term metric aggregation still
+depend on future usage-bearing run events and a host-selected metrics backend.
 
 Phase 2 limitations: policy decisions are currently in-memory, approval has no
 durable request store or timeout queue, bootstrap documents are returned as
