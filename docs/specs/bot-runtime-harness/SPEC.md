@@ -111,6 +111,9 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
 - Protocol bridge integration：`OllamaServerConfig.runtime` 可將 Ollama/OpenAI
   non-stream 與 streaming requests 導入 `BotRuntime`，保留 legacy bridge mode 供
   existing hosts 遷移。
+- Delegation control plane：`DelegationManager` 提供 parent/child run relationship、
+  background handles、timeout cancellation、partial-failure aggregation 與 result
+  routing events。
 - CI/CD Agent SDK update 與 SessionStart version check。
 
 目前 runtime 元件已分散存在，但缺少 `BotRuntime` composition root 將它們串成
@@ -471,9 +474,9 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 
 ### Phase 5: Multi-agent and concrete delivery
 
-- [ ] Define parent/child delegation events。
-- [ ] Implement background delegation and result routing。
-- [ ] Add partial failure, timeout and budget propagation。
+- [x] Define parent/child delegation events。
+- [x] Implement background delegation and result routing。
+- [x] Add partial failure, timeout and per-child budget propagation through `BotRuntime`。
 - [x] Define generic channel delivery contract and router。
 - [ ] Implement concrete channel delivery adapters。
 - [ ] Keep OpenAI/Ollama bridge on the generic delivery contract。
@@ -505,6 +508,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - `src/runtime/memory.ts` - scoped memory provider contract and in-memory/Markdown implementations。
 - `src/runtime/delivery.ts` - channel-independent delivery contract, router and in-memory adapter。
 - `src/runtime/bot-runtime.ts` - BotRuntime composition root and common bot execution path。
+- `src/runtime/delegation.ts` - parent/child delegation manager and result aggregation。
 
 ### Planned modules
 
@@ -518,6 +522,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - `src/runtime/scheduler.ts` - future scheduler extensions such as catch-up policy and job chaining。
 - `src/runtime/memory.ts` - memory provider and scope contract。
 - `src/runtime/bots.ts` - bot manifest and workspace bootstrap。
+- `src/runtime/delegation.ts` - parent/child orchestration and timeout/result routing。
 - `src/runtime/delegation.ts` - parent/child orchestration。
 - `src/runtime/observability.ts` - traces, audit and metrics。
 

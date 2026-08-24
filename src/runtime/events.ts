@@ -21,6 +21,10 @@ export type RuntimeEvent =
   | (RuntimeEventBase & { type: 'delivery.queued'; target: string })
   | (RuntimeEventBase & { type: 'delivery.sent'; target: string })
   | (RuntimeEventBase & { type: 'delivery.failed'; target: string; error: string })
+  | (RuntimeEventBase & { type: 'delegation.requested'; parentRunId: string; childRunId: string; taskId: string })
+  | (RuntimeEventBase & { type: 'delegation.started'; parentRunId: string; childRunId: string; taskId: string })
+  | (RuntimeEventBase & { type: 'delegation.completed'; parentRunId: string; childRunId: string; taskId: string; output?: string })
+  | (RuntimeEventBase & { type: 'delegation.failed'; parentRunId: string; childRunId: string; taskId: string; error: string })
 
 export type RuntimeEventSubscriber = (event: RuntimeEvent) => void | Promise<void>
 

@@ -23,6 +23,14 @@ export {
 } from './bot-runtime.ts'
 
 export {
+  DelegationManager,
+  type DelegationAggregate,
+  type DelegationHandle,
+  type DelegationManagerOptions,
+  type DelegationRequest,
+} from './delegation.ts'
+
+export {
   DeliveryRouter,
   InMemoryDeliveryAdapter,
   type DeliveryAdapter,
