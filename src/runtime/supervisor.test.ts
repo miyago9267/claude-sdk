@@ -130,6 +130,27 @@ describe('RunSupervisor', () => {
     expect(supervisor.getRun(result.runId)?.attempt).toBe(2)
   })
 
+  test('can retry rate-limited handlers with the existing retry budget', async () => {
+    const supervisor = new RunSupervisor({
+      registry: new SessionRegistry(new InMemorySessionStore()),
+      maxAttempts: 2,
+      retryRateLimits: true,
+    })
+    let attempts = 0
+
+    const result = await supervisor.submit(
+      { ...request, idempotencyKey: 'message-rate-limit' },
+      async () => {
+        attempts += 1
+        if (attempts === 1) throw Object.assign(new Error('rate limited'), { status: 429 })
+        return { output: 'recovered' }
+      },
+    )
+
+    expect(result).toMatchObject({ status: 'completed', output: 'recovered' })
+    expect(attempts).toBe(2)
+  })
+
   test('fails a run when the handler exceeds the timeout', async () => {
     const supervisor = new RunSupervisor({
       registry: new SessionRegistry(new InMemorySessionStore()),

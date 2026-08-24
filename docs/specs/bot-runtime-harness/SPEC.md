@@ -483,7 +483,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 
 ### Phase 6: Production hardening
 
-- [ ] Add provider/model fallback and rate-limit handling。
+- [x] Add provider/model fallback and rate-limit handling。
 - [ ] Add sandbox/worktree adapters and resource limits。
 - [ ] Add queryable traces, metrics and audit export。
 - [x] Add crash recovery and abandoned-run repair tooling。
@@ -558,6 +558,10 @@ provided redaction layer before persistence.
 
 Config compatibility limitations: `runtimeConfig` integration is available at
 invocation time, while layer loading/resolution remains host-owned. Claude
+fallback configuration maps to the official SDK's single `fallbackModel` field;
+additional fallback entries produce an unsupported diagnostic and are not
+silently chained by the harness. Rate-limit retry is opt-in through Supervisor
+options and uses the existing `maxAttempts`/`retryDelayMs` controls.
 hooks、argument-constrained permission patterns、additional directories and
 provider fallback remain future work; `danger-full-access` intentionally stays
 sandboxed with an unsafe diagnostic.

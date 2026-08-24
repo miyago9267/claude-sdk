@@ -85,6 +85,7 @@ export interface RunSupervisorOptions {
   maxConcurrencyPerBot?: number
   maxConcurrencyPerUser?: number
   runStore?: RunStore
+  retryRateLimits?: boolean
 }
 
 interface QueuedRun {
@@ -333,7 +334,10 @@ export class RunSupervisor {
             return
           }
           const timedOut = attemptController.signal.aborted
-          const retryable = !timedOut && (this.options.shouldRetry?.(error) ?? false)
+          const retryable = !timedOut && (
+            (this.options.shouldRetry?.(error) ?? false) ||
+            (this.options.retryRateLimits === true && isRateLimitError(error))
+          )
           if (!retryable || run.attempt >= Math.max(1, this.options.maxAttempts ?? 1)) {
             const message = timedOut ? 'run timed out' : error instanceof Error ? error.message : String(error)
             run.status = 'failed'
@@ -399,4 +403,12 @@ export class RunSupervisor {
     if (next <= 0) counts.delete(key)
     else counts.set(key, next)
   }
+}
+
+function isRateLimitError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown; message?: unknown }
+  if (candidate.status === 429 || candidate.statusCode === 429) return true
+  if (candidate.code === 'rate_limit_exceeded' || candidate.code === 'too_many_requests') return true
+  return typeof candidate.message === 'string' && /rate.?limit|too many requests/i.test(candidate.message)
 }
