@@ -17,6 +17,7 @@ export * from './config/index.ts'
 
 export {
   BotRuntime,
+  type BotRunHandle,
   type BotRuntimeOptions,
   type BotRuntimeRequest,
 } from './bot-runtime.ts'

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +8,8 @@ import { InMemorySessionStore, SessionRegistry } from './sessions.ts'
 import { FileJobStore, InMemoryJobStore, Scheduler, type JobStore } from './scheduler.ts'
 import { RunSupervisor, type RunHandler } from './supervisor.ts'
 import { DeliveryRouter, InMemoryDeliveryAdapter } from './delivery.ts'
+import { BotRegistry } from './bots.ts'
+import { BotRuntime } from './bot-runtime.ts'
 
 const makeScheduler = (
   handler: RunHandler,
@@ -20,6 +23,52 @@ const makeScheduler = (
 }
 
 describe('Scheduler', () => {
+  test('routes scheduled prompts through BotRuntime when a runtime is provided', async () => {
+    const prompts: unknown[] = []
+    const adapter = new InMemoryDeliveryAdapter('memory:')
+    const registry = new BotRegistry()
+    registry.register({ id: 'scheduled-bot', workspace: process.cwd() })
+    const runtime = new BotRuntime({
+      registry,
+      sessions: new SessionRegistry(new InMemorySessionStore()),
+      delivery: new DeliveryRouter({ adapters: [adapter] }),
+      query: ({ prompt }) => {
+        prompts.push(prompt)
+        const stream = (async function* (): AsyncGenerator<SDKMessage> {
+          yield {
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: 'scheduled result',
+            total_cost_usd: 0,
+            session_id: 'scheduled-sdk-session',
+          } as SDKMessage
+        })()
+        return Object.assign(stream, { close: () => undefined }) as unknown as Query
+      },
+    })
+    const scheduler = new Scheduler({
+      store: new InMemoryJobStore(),
+      runtime,
+    })
+    await scheduler.register({
+      id: 'runtime-job',
+      botId: 'scheduled-bot',
+      sessionKey: 'scheduled-bot:cron',
+      trigger: 'cron',
+      prompt: 'run scheduled work',
+      schedule: { type: 'once', at: '2026-08-24T09:00:00.000Z' },
+      deliveryTarget: 'memory:inbox',
+      status: 'active',
+    })
+
+    const results = await scheduler.tick(new Date('2026-08-24T09:01:00.000Z'))
+
+    expect(results[0]).toMatchObject({ status: 'completed', output: 'scheduled result' })
+    expect(prompts).toEqual(['run scheduled work'])
+    expect(adapter.messages[0]?.event).toMatchObject({ type: 'run.completed' })
+  })
+
   test('runs a due one-shot job once and marks it completed', async () => {
     let executions = 0
     const scheduler = makeScheduler(async () => {

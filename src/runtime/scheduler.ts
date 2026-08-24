@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { parseCronExpression } from './cron.ts'
 import type { RuntimeEvent } from './events.ts'
 import type { DeliveryRouter } from './delivery.ts'
+import type { BotRuntime } from './bot-runtime.ts'
 import type { RunResult } from './supervisor.ts'
 import type { RunHandler, RunSupervisor } from './supervisor.ts'
 import type { RunEnvelope } from './types.ts'
@@ -32,6 +33,7 @@ export interface ScheduledJob {
   sessionMode?: 'isolated' | 'shared'
   nextRunAt?: string
   deliveryTarget?: string
+  prompt?: string
   model?: string
   workspace?: string
   lastRunId?: string
@@ -45,6 +47,7 @@ export interface ScheduledJobPatch {
   trigger?: ScheduledJob['trigger']
   schedule?: JobSchedule
   nextRunAt?: string | null
+  prompt?: string
   deliveryTarget?: string
   model?: string
   workspace?: string
@@ -128,8 +131,9 @@ export class FileJobStore implements JobStore {
 
 export interface SchedulerOptions {
   store: JobStore
-  supervisor: RunSupervisor
-  handler: (job: ScheduledJob) => RunHandler
+  supervisor?: RunSupervisor
+  handler?: (job: ScheduledJob) => RunHandler
+  runtime?: BotRuntime
   now?: () => Date
   onTickError?: (error: unknown) => void | Promise<void>
   delivery?: DeliveryRouter
@@ -141,6 +145,9 @@ export class Scheduler {
   private timer?: ReturnType<typeof setInterval>
 
   constructor(private readonly options: SchedulerOptions) {
+    if (!options.runtime && (!options.supervisor || !options.handler)) {
+      throw new Error('scheduler requires runtime or supervisor and handler')
+    }
     this.now = options.now ?? (() => new Date())
   }
 
@@ -201,7 +208,10 @@ export class Scheduler {
 
   async remove(id: string): Promise<void> {
     const job = await this.options.store.get(id)
-    if (job?.lastRunId) this.options.supervisor.cancel(job.lastRunId)
+    if (job?.lastRunId) {
+      if (this.options.runtime) this.options.runtime.cancel(job.lastRunId)
+      else this.options.supervisor?.cancel(job.lastRunId)
+    }
     await this.options.store.delete(id)
   }
 
@@ -253,20 +263,21 @@ export class Scheduler {
       updatedAt: now.toISOString(),
     }
     await this.options.store.save(queued)
-    const promise = this.options.supervisor.submit(
-      {
-        botId: job.botId,
-        sessionKey: this.sessionKeyFor(job),
-        trigger: job.trigger,
-        idempotencyKey: `job:${job.id}:${now.toISOString()}`,
-        ...(job.model ? { model: job.model } : {}),
-        ...(job.workspace ? { workspace: job.workspace } : {}),
-      },
-      this.options.handler(job),
-    )
-    const result = await promise
+    const result = this.options.runtime
+      ? await this.runThroughRuntime(job, now)
+      : await this.options.supervisor!.submit(
+          {
+            botId: job.botId,
+            sessionKey: this.sessionKeyFor(job),
+            trigger: job.trigger,
+            idempotencyKey: `job:${job.id}:${now.toISOString()}`,
+            ...(job.model ? { model: job.model } : {}),
+            ...(job.workspace ? { workspace: job.workspace } : {}),
+          },
+          this.options.handler!(job),
+        )
     this.running.delete(job.id)
-    const deliveryResult = await this.deliverResult(job, result)
+    const deliveryResult = this.options.runtime ? undefined : await this.deliverResult(job, result)
     const finalJob = await this.options.store.get(job.id)
     if (!finalJob) return [result]
     const updated: ScheduledJob = {
@@ -282,6 +293,20 @@ export class Scheduler {
     }
     await this.options.store.save(updated)
     return [result]
+  }
+
+  private async runThroughRuntime(job: ScheduledJob, now: Date): Promise<RunResult> {
+    if (!job.prompt) throw new Error(`scheduled job requires prompt: ${job.id}`)
+    return this.options.runtime!.run({
+      botId: job.botId,
+      sessionKey: this.sessionKeyFor(job),
+      trigger: job.trigger,
+      idempotencyKey: `job:${job.id}:${now.toISOString()}`,
+      prompt: job.prompt,
+      deliveryTarget: job.deliveryTarget,
+      ...(job.model ? { model: job.model } : {}),
+      ...(job.workspace ? { workspace: job.workspace } : {}),
+    })
   }
 
   private async advanceHeartbeat(job: ScheduledJob, at: Date): Promise<void> {
@@ -300,7 +325,7 @@ export class Scheduler {
 
   private async deliverResult(job: ScheduledJob, result: RunResult) {
     if (!job.deliveryTarget || !this.options.delivery) return undefined
-    const run = this.options.supervisor.getRun(result.runId)
+    const run = this.options.supervisor?.getRun(result.runId)
     if (!run) return undefined
     const event = result.status === 'completed'
       ? makeCompletedEvent(run, result.output)

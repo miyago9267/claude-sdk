@@ -43,6 +43,16 @@ export interface BotRuntimeOptions {
   query?: typeof sdkQuery
 }
 
+export interface BotRunHandle {
+  runId: string
+  result: Promise<RunResult>
+  cancel(): boolean
+  interrupt(): Promise<boolean>
+  setModel(model?: string): Promise<boolean>
+  setPermissionMode(mode: Parameters<Query['setPermissionMode']>[0]): Promise<boolean>
+  setMaxThinkingTokens(tokens?: number): Promise<boolean>
+}
+
 export class BotRuntime {
   private readonly registry: BotRegistry
   private readonly sessions: SessionRegistry
@@ -51,6 +61,8 @@ export class BotRuntime {
   private readonly delivery?: DeliveryRouter
   private readonly approval?: ApprovalProvider
   private readonly query: typeof sdkQuery
+  private readonly activeQueries = new Map<string, Query>()
+  private readonly deliveredRuns = new Set<string>()
 
   constructor(options: BotRuntimeOptions) {
     this.registry = options.registry
@@ -67,22 +79,40 @@ export class BotRuntime {
   }
 
   async run(request: BotRuntimeRequest): Promise<RunResult> {
+    return this.start(request).result
+  }
+
+  start(request: BotRuntimeRequest): BotRunHandle {
     const manifest = this.registry.get(request.botId)
     if (!manifest) throw new Error(`unknown bot: ${request.botId}`)
 
+    const idempotencyKey = request.idempotencyKey ?? `bot-runtime:${randomUUID()}`
     const effectiveRequest: RunRequest = {
       ...request,
+      idempotencyKey,
       workspace: request.workspace ?? manifest.workspace,
       ...(request.budgetUSD !== undefined || manifest.budget?.perRunUSD === undefined
         ? {}
         : { budgetUSD: manifest.budget.perRunUSD }),
     }
-    const result = await this.supervisor.submit(effectiveRequest, (context) =>
+    const supervisorResult = this.supervisor.submit(effectiveRequest, (context) =>
       this.executeTurn(manifest, request, context),
     )
+    const run = this.supervisor.listRuns().find((candidate) => candidate.idempotencyKey === idempotencyKey)
+    if (!run) throw new Error(`failed to create bot run: ${request.botId}`)
 
-    await this.deliverResult(request.deliveryTarget, result)
-    return result
+    return {
+      runId: run.runId,
+      result: supervisorResult.then(async (result) => {
+        await this.deliverResult(request.deliveryTarget, result)
+        return result
+      }),
+      cancel: () => this.supervisor.cancel(run.runId),
+      interrupt: () => this.interrupt(run.runId),
+      setModel: (model) => this.setModel(run.runId, model),
+      setPermissionMode: (mode) => this.setPermissionMode(run.runId, mode),
+      setMaxThinkingTokens: (tokens) => this.setMaxThinkingTokens(run.runId, tokens),
+    }
   }
 
   getRun(runId: string) {
@@ -91,6 +121,37 @@ export class BotRuntime {
 
   cancel(runId: string): boolean {
     return this.supervisor.cancel(runId)
+  }
+
+  async interrupt(runId: string): Promise<boolean> {
+    const activeQuery = this.activeQueries.get(runId)
+    if (!activeQuery) return false
+    await activeQuery.interrupt()
+    return true
+  }
+
+  async setModel(runId: string, model?: string): Promise<boolean> {
+    const activeQuery = this.activeQueries.get(runId)
+    if (!activeQuery) return false
+    await activeQuery.setModel(model)
+    return true
+  }
+
+  async setPermissionMode(
+    runId: string,
+    mode: Parameters<Query['setPermissionMode']>[0],
+  ): Promise<boolean> {
+    const activeQuery = this.activeQueries.get(runId)
+    if (!activeQuery) return false
+    await activeQuery.setPermissionMode(mode)
+    return true
+  }
+
+  async setMaxThinkingTokens(runId: string, tokens?: number): Promise<boolean> {
+    const activeQuery = this.activeQueries.get(runId)
+    if (!activeQuery) return false
+    await activeQuery.setMaxThinkingTokens(tokens)
+    return true
   }
 
   async shutdown(reason?: string): Promise<void> {
@@ -109,6 +170,8 @@ export class BotRuntime {
       ...(request.runtimeConfig ? { runtimeConfig: request.runtimeConfig } : {}),
     }
     const options = buildBotOptions(manifest, invocation, this.approval)
+    if (request.model) options.model = request.model
+    if (request.workspace) options.cwd = request.workspace
     if (context.session.sdkSessionId) options.resume = context.session.sdkSessionId
     const queryAbortController = options.abortController ?? new AbortController()
     options.abortController = queryAbortController
@@ -116,6 +179,7 @@ export class BotRuntime {
     context.signal.addEventListener('abort', abortQuery, { once: true })
 
     const activeQuery = this.query({ prompt: request.prompt, options })
+    this.activeQueries.set(context.run.runId, activeQuery)
     let resultMessage: SDKResultMessage | undefined
     let streamedText = ''
 
@@ -131,6 +195,9 @@ export class BotRuntime {
         }
       }
     } finally {
+      if (this.activeQueries.get(context.run.runId) === activeQuery) {
+        this.activeQueries.delete(context.run.runId)
+      }
       context.signal.removeEventListener('abort', abortQuery)
       activeQuery.close()
     }
@@ -172,6 +239,8 @@ export class BotRuntime {
 
   private async deliverResult(target: string | undefined, result: RunResult): Promise<void> {
     if (!target || !this.delivery) return
+    if (this.deliveredRuns.has(result.runId)) return
+    this.deliveredRuns.add(result.runId)
     const run = this.supervisor.getRun(result.runId)
     if (!run) return
 

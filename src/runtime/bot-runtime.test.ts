@@ -126,6 +126,131 @@ describe('BotRuntime', () => {
     })).rejects.toThrow('unknown bot: missing')
   })
 
+  test('deduplicates delivery when the same idempotency key is submitted twice', async () => {
+    const calls: Array<{ prompt: unknown; options: Record<string, unknown> }> = []
+    const adapter = new InMemoryDeliveryAdapter('test:')
+    const registry = new BotRegistry()
+    registry.register({ id: 'writer', workspace: process.cwd() })
+    const runtime = new BotRuntime({
+      registry,
+      sessions: new SessionRegistry(new InMemorySessionStore()),
+      delivery: new DeliveryRouter({ adapters: [adapter] }),
+      query: fakeQueryFactory(calls),
+    })
+
+    const [first, second] = await Promise.all([
+      runtime.run({
+        botId: 'writer',
+        sessionKey: 'writer:user-1',
+        trigger: 'message',
+        idempotencyKey: 'same-message',
+        prompt: 'hello',
+        deliveryTarget: 'test:user-1',
+      }),
+      runtime.run({
+        botId: 'writer',
+        sessionKey: 'writer:user-1',
+        trigger: 'message',
+        idempotencyKey: 'same-message',
+        prompt: 'hello',
+        deliveryTarget: 'test:user-1',
+      }),
+    ])
+
+    expect(first.runId).toBe(second.runId)
+    expect(calls).toHaveLength(1)
+    expect(adapter.messages).toHaveLength(1)
+  })
+
+  test('applies manifest denial and runtime approval through the public run path', async () => {
+    const decisions: Array<{ behavior: string }> = []
+    const query = ({ options }: { options?: Record<string, any> }): Query => {
+      const stream = (async function* (): AsyncGenerator<SDKMessage> {
+        const decision = await options?.canUseTool?.('Bash', { command: 'echo hi' }, {
+          signal: new AbortController().signal,
+        })
+        decisions.push(decision)
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: 'checked',
+          total_cost_usd: 0,
+          session_id: 'sdk-policy-session',
+        } as SDKMessage
+      })()
+      return Object.assign(stream, { close: () => undefined }) as unknown as Query
+    }
+    const registry = new BotRegistry()
+    registry.register({
+      id: 'deny-bot',
+      workspace: process.cwd(),
+      policy: { defaultDecision: 'deny', rules: [] },
+    })
+    registry.register({
+      id: 'approval-bot',
+      workspace: process.cwd(),
+      policy: { defaultDecision: 'ask-human', rules: [] },
+    })
+    const runtime = new BotRuntime({
+      registry,
+      sessions: new SessionRegistry(new InMemorySessionStore()),
+      approval: async () => 'allow',
+      query,
+    })
+
+    await runtime.run({ botId: 'deny-bot', sessionKey: 'deny', trigger: 'message', prompt: 'check' })
+    await runtime.run({ botId: 'approval-bot', sessionKey: 'approval', trigger: 'message', prompt: 'check' })
+
+    expect(decisions).toEqual([
+      expect.objectContaining({ behavior: 'deny' }),
+      expect.objectContaining({ behavior: 'allow' }),
+    ])
+  })
+
+  test('exposes live Query controls through a BotRunHandle', async () => {
+    let started!: () => void
+    const queryStarted = new Promise<void>((resolve) => { started = resolve })
+    let selectedModel: string | undefined
+    let selectedPermissionMode: string | undefined
+    let selectedThinkingTokens: number | undefined
+    const registry = new BotRegistry()
+    registry.register({ id: 'control-bot', workspace: process.cwd() })
+    const runtime = new BotRuntime({
+      registry,
+      sessions: new SessionRegistry(new InMemorySessionStore()),
+      query: ({ options }) => {
+        const stream = (async function* (): AsyncGenerator<SDKMessage> {
+          started()
+          await new Promise<void>((resolve) => options?.abortController?.signal.addEventListener('abort', () => resolve(), { once: true }))
+        })()
+        return Object.assign(stream, {
+          interrupt: async () => options?.abortController?.abort('interrupt'),
+          setModel: async (model?: string) => { selectedModel = model },
+          setPermissionMode: async (mode: string) => { selectedPermissionMode = mode },
+          setMaxThinkingTokens: async (tokens?: number) => { selectedThinkingTokens = tokens },
+          close: () => undefined,
+        }) as unknown as Query
+      },
+    })
+
+    const handle = runtime.start({
+      botId: 'control-bot',
+      sessionKey: 'control',
+      trigger: 'message',
+      prompt: 'wait',
+    })
+    await queryStarted
+    expect(await handle.setModel('sonnet')).toBe(true)
+    expect(await handle.setPermissionMode('default')).toBe(true)
+    expect(await handle.setMaxThinkingTokens(1024)).toBe(true)
+    expect(selectedModel).toBe('sonnet')
+    expect(selectedPermissionMode).toBe('default')
+    expect(selectedThinkingTokens).toBe(1024)
+    expect(handle.cancel()).toBe(true)
+    await expect(handle.result).resolves.toMatchObject({ status: 'cancelled' })
+  })
+
   test('propagates supervisor timeout cancellation to the SDK query', async () => {
     let querySignal: AbortSignal | undefined
     const runtime = new BotRuntime({

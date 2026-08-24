@@ -103,6 +103,9 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
   `buildBotOptions`，並與 manifest policy 合併後套用到 SDK 與 `canUseTool`。
 - `BotRuntime` initial assembly slice：manual/message run 已串接 manifest、session、
   supervisor、official SDK、runtime events、audit、delivery 與 session resume。
+- `BotRuntime` control surface：`start()` handle 提供 cancel、interrupt、model、
+  permission mode 與 thinking token controls；scheduler 可將 prompt job 導入同一條
+  runtime path。
 - Delivery foundation：channel-independent `DeliveryRouter`、lifecycle events
   與 in-memory adapter；實際 channel adapter 仍由外部整合層提供。
 - CI/CD Agent SDK update 與 SessionStart version check。
@@ -455,12 +458,12 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - [x] Define `BotRuntime` constructor, host dependency injection and lifecycle contract。
 - [x] Implement one message/manual execution path through config、manifest、session、
   supervisor、official SDK、events、audit and delivery。
-- [ ] Preserve SDK streaming and Query controls through the runtime result interface。
-- [x] Add runtime integration tests for same-session serialization、timeout、audit and
-  delivery。
-- [ ] Add runtime integration tests for idempotency、policy denial and approval。
+- [x] Preserve SDK streaming events and Query controls through the `BotRunHandle`。
+- [x] Add runtime integration tests for same-session serialization、timeout、audit、
+  delivery、idempotency、policy denial and approval。
 - [x] Export `BotRuntime` from `@miyago/claude-sdk/runtime` and the root package。
-- [ ] Route scheduler jobs and protocol bridge requests through the same runtime entry。
+- [x] Route scheduler prompt jobs through the same runtime entry。
+- [ ] Route Ollama/OpenAI protocol bridge requests through the same runtime entry。
 
 ### Phase 5: Multi-agent and concrete delivery
 
@@ -520,10 +523,9 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 planning targets, not a commitment to preserve the exact module layout during
 implementation.
 
-Runtime assembly limitations: the initial `BotRuntime` manual/message slice is
-implemented, while scheduler and protocol bridge still have their own host-facing
-entry points. Query control passthrough, policy/approval integration tests and
-common routing remain before this phase is complete.
+Runtime assembly limitations: the initial `BotRuntime` manual/message slice and
+scheduler prompt path are implemented. Ollama/OpenAI bridge routing remains, and
+the bridge still owns its history-keyed session pool until that migration is complete.
 
 Phase 2 limitations: policy decisions are currently in-memory, approval has no
 durable request store or timeout queue, bootstrap documents are returned as
