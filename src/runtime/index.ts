@@ -21,6 +21,16 @@ export {
   type RuntimeMetricsSnapshot,
 } from './observability.ts'
 
+export {
+  WorkspaceExecutionBoundary,
+  type ExecutionBoundary,
+  type ExecutionLease,
+  type ExecutionRequest,
+  type WorktreeAdapter,
+  type WorktreeLease,
+  type WorkspaceExecutionBoundaryOptions,
+} from './execution.ts'
+
 export * from './config/index.ts'
 
 export {

@@ -116,6 +116,9 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
   routing events。
 - Observability foundation：audit query filters、parent/child trace lookup、JSONL
   export，以及 event-based runtime metrics snapshot。
+- Execution boundary foundation：workspace allow-root validation、sandbox gate、
+  worktree lease contract 與 BotRuntime injection；run timeout、concurrency、
+  budget limits 維持由 Supervisor 統一執行。
 - CI/CD Agent SDK update 與 SessionStart version check。
 
 目前 runtime 元件已分散存在，但缺少 `BotRuntime` composition root 將它們串成
@@ -486,7 +489,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 ### Phase 6: Production hardening
 
 - [x] Add provider/model fallback and rate-limit handling。
-- [ ] Add sandbox/worktree adapters and resource limits。
+- [x] Add sandbox/worktree adapters and resource limits。
 - [x] Add queryable traces, metrics and audit export。
 - [x] Add crash recovery and abandoned-run repair tooling。
 - [ ] Review and remove optimize utilities replaced by official SDK features。
@@ -512,6 +515,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - `src/runtime/bot-runtime.ts` - BotRuntime composition root and common bot execution path。
 - `src/runtime/delegation.ts` - parent/child delegation manager and result aggregation。
 - `src/runtime/observability.ts` - event-based runtime metrics collector。
+- `src/runtime/execution.ts` - workspace/sandbox boundary and worktree lease contract。
 
 ### Planned modules
 
@@ -550,6 +554,11 @@ Observability limitations: the initial metrics collector is in-memory and event
 counter based; provider token/cache usage and long-term metric aggregation still
 depend on future usage-bearing run events and a host-selected metrics backend.
 
+Execution limitations: the core provides boundary validation and a worktree lease
+interface, while the actual Git worktree implementation remains host-owned. Fine
+grained OS memory/process limits are not portable across runtimes; current core
+limits are timeout, concurrency, budget and SDK sandbox availability.
+
 Phase 2 limitations: policy decisions are currently in-memory, approval has no
 durable request store or timeout queue, bootstrap documents are returned as
 untrusted workspace content rather than automatically merged into a system
@@ -565,10 +574,9 @@ provided redaction layer before persistence.
 
 Config compatibility limitations: `runtimeConfig` integration is available at
 invocation time, while layer loading/resolution remains host-owned. Claude
-fallback configuration maps to the official SDK's single `fallbackModel` field;
-additional fallback entries produce an unsupported diagnostic and are not
-silently chained by the harness. Rate-limit retry is opt-in through Supervisor
-options and uses the existing `maxAttempts`/`retryDelayMs` controls.
+fallback configuration maps to the official SDK's comma-separated `fallbackModel`
+field. Rate-limit retry is opt-in through Supervisor options and uses the existing
+`maxAttempts`/`retryDelayMs` controls.
 hooks、argument-constrained permission patterns、additional directories and
 provider fallback remain future work; `danger-full-access` intentionally stays
 sandboxed with an unsafe diagnostic.

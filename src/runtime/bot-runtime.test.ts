@@ -5,6 +5,7 @@ import { AuditRecorder, InMemoryAuditStore } from './audit.ts'
 import { BotRegistry } from './bots.ts'
 import { BotRuntime } from './bot-runtime.ts'
 import { DeliveryRouter, InMemoryDeliveryAdapter } from './delivery.ts'
+import { WorkspaceExecutionBoundary } from './execution.ts'
 import { RuntimeEventBus } from './events.ts'
 import { InMemorySessionStore, SessionRegistry } from './sessions.ts'
 import { RunSupervisor } from './supervisor.ts'
@@ -279,5 +280,29 @@ describe('BotRuntime', () => {
 
     expect(result).toMatchObject({ status: 'failed', error: 'run timed out' })
     expect(querySignal?.aborted).toBe(true)
+  })
+
+  test('applies an injected execution boundary before entering the SDK', async () => {
+    const calls: Array<{ prompt: unknown; options: Record<string, unknown> }> = []
+    const registry = new BotRegistry()
+    registry.register({ id: 'writer', workspace: process.cwd() })
+    const runtime = new BotRuntime({
+      registry,
+      sessions: new SessionRegistry(new InMemorySessionStore()),
+      execution: new WorkspaceExecutionBoundary({ allowedRoots: [process.cwd()], requireSandbox: true }),
+      query: fakeQueryFactory(calls),
+    })
+
+    const result = await runtime.run({
+      botId: 'writer',
+      sessionKey: 'writer:boundary',
+      trigger: 'message',
+      prompt: 'hello',
+      sandboxed: true,
+    })
+
+    expect(result.status).toBe('completed')
+    expect(calls[0]?.options.cwd).toBe(process.cwd())
+    expect(calls[0]?.options.sandbox).toEqual({ enabled: true, failIfUnavailable: true })
   })
 })

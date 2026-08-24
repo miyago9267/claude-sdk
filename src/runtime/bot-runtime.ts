@@ -19,6 +19,7 @@ import {
 } from './bots.ts'
 import type { RuntimeConfig } from './config/index.ts'
 import { DeliveryRouter } from './delivery.ts'
+import type { ExecutionBoundary } from './execution.ts'
 import { RuntimeEventBus } from './events.ts'
 import { SessionRegistry } from './sessions.ts'
 import type { RunHandlerContext, RunHandlerResult, RunResult, RunSupervisorOptions } from './supervisor.ts'
@@ -45,6 +46,7 @@ export interface BotRuntimeOptions {
   delivery?: DeliveryRouter
   approval?: ApprovalProvider
   query?: typeof sdkQuery
+  execution?: ExecutionBoundary
 }
 
 export interface BotRunHandle {
@@ -65,6 +67,7 @@ export class BotRuntime {
   private readonly delivery?: DeliveryRouter
   private readonly approval?: ApprovalProvider
   private readonly query: typeof sdkQuery
+  private readonly execution?: ExecutionBoundary
   private readonly activeQueries = new Map<string, Query>()
   private readonly deliveredRuns = new Set<string>()
 
@@ -75,6 +78,7 @@ export class BotRuntime {
     this.delivery = options.delivery
     this.approval = options.approval
     this.query = options.query ?? sdkQuery
+    this.execution = options.execution
     this.supervisor = options.supervisor ?? new RunSupervisor({
       ...options.supervisorOptions,
       registry: options.sessions,
@@ -175,6 +179,13 @@ export class BotRuntime {
     request: BotRuntimeRequest,
     context: RunHandlerContext,
   ): Promise<RunHandlerResult> {
+    const execution = await this.execution?.prepare({
+      botId: manifest.id,
+      workspace: request.workspace ?? manifest.workspace,
+      ...(request.sandboxed !== undefined ? { sandboxed: request.sandboxed } : {}),
+      ...(request.runtimeConfig ? { runtimeConfig: request.runtimeConfig } : {}),
+    })
+    try {
     const invocation: BotInvocationContext = {
       sessionKey: request.sessionKey,
       ...(request.userId ? { userId: request.userId } : {}),
@@ -184,7 +195,10 @@ export class BotRuntime {
     const options = buildBotOptions(manifest, invocation, this.approval)
     if (request.systemPrompt !== undefined) options.systemPrompt = request.systemPrompt
     if (request.model) options.model = request.model
-    if (request.workspace) options.cwd = request.workspace
+    if (execution) {
+      options.cwd = execution.workspace
+      if (execution.sandboxed) options.sandbox = { enabled: true, failIfUnavailable: true }
+    } else if (request.workspace) options.cwd = request.workspace
     if (context.session.sdkSessionId) options.resume = context.session.sdkSessionId
     const queryAbortController = options.abortController ?? new AbortController()
     options.abortController = queryAbortController
@@ -225,11 +239,14 @@ export class BotRuntime {
 
     await this.sessions.update(context.session.sessionKey, {
       sdkSessionId: resultMessage.session_id,
-      workspace: manifest.workspace,
+      workspace: execution?.workspace ?? request.workspace ?? manifest.workspace,
     })
     return {
       output: resultMessage.result || streamedText,
       costUSD: resultMessage.total_cost_usd,
+    }
+    } finally {
+      await execution?.release()
     }
   }
 

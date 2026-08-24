@@ -25,16 +25,7 @@ export function runtimeConfigToAgentOptions(config: RuntimeConfig, source = 'run
   }
 
   if (config.model !== undefined) options.model = config.model
-  if (config.fallbackModels?.[0] !== undefined) options.fallbackModel = config.fallbackModels[0]
-  if (config.fallbackModels && config.fallbackModels.length > 1) {
-    diagnostics.push({
-      level: 'warning',
-      code: 'unsupported',
-      field: 'fallbackModels',
-      source,
-      message: 'Claude Agent SDK accepts one fallbackModel; only the first fallback model is mapped',
-    })
-  }
+  if (config.fallbackModels?.length) options.fallbackModel = config.fallbackModels.join(',')
   if (config.environment !== undefined) options.env = { ...process.env, ...config.environment }
 
   if (config.reasoningEffort !== undefined) {

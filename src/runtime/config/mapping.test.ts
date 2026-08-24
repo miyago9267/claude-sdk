@@ -27,13 +27,11 @@ describe('RuntimeConfig SDK mapping', () => {
     })
   })
 
-  test('maps the first configured fallback model to the official SDK option', () => {
+  test('maps configured fallback models to the official comma-separated option', () => {
     const result = runtimeConfigToAgentOptions({ fallbackModels: ['claude-sonnet-4-5', 'claude-haiku-4-5'] })
 
-    expect(result.options.fallbackModel).toBe('claude-sonnet-4-5')
-    expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: 'fallbackModels', code: 'unsupported' }),
-    ]))
+    expect(result.options.fallbackModel).toBe('claude-sonnet-4-5,claude-haiku-4-5')
+    expect(result.diagnostics).toEqual([])
   })
 
   test('does not grant unsandboxed execution for danger-full-access', () => {
