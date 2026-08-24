@@ -89,6 +89,8 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
   Codex TOML import、layer precedence 與 unsupported/override diagnostics。
 - Config mapping foundation：supported fields map to Claude SDK options and
   explicit runtime policy inputs with fail-closed privilege handling。
+- Bot options integration：`runtimeConfig` 可由 invocation context 傳入
+  `buildBotOptions`，並與 manifest policy 合併後套用到 SDK 與 `canUseTool`。
 - Delivery foundation：channel-independent `DeliveryRouter`、lifecycle events
   與 in-memory adapter；實際 channel adapter 仍由外部整合層提供。
 - CI/CD Agent SDK update 與 SessionStart version check。
@@ -464,10 +466,10 @@ Audit limitations: default redaction is key-based and protects common secret
 fields; arbitrary secret values embedded in free-form text require a caller
 provided redaction layer before persistence.
 
-Config compatibility limitations: the current mapping emits explicit SDK options
-and runtime policy inputs, but automatic merging into `BotManifest` is still
-caller-owned. Claude `settings.json` adapter and provider fallback remain future
-work; `danger-full-access` intentionally stays sandboxed with an unsafe diagnostic.
+Config compatibility limitations: `runtimeConfig` integration is available at
+invocation time, while layer loading/resolution remains host-owned. Claude
+`settings.json` adapter and provider fallback remain future work;
+`danger-full-access` intentionally stays sandboxed with an unsafe diagnostic.
 
 Phase 3 limitations: cron uses UTC 5-field expressions only and scheduler does not
 yet provide missed-run/catch-up policy, job chaining or script-only jobs. Memory

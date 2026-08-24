@@ -70,4 +70,64 @@ describe('bot manifest', () => {
       behavior: 'allow',
     })
   })
+
+  test('connects runtime config to SDK options and policy while keeping manifest precedence', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claude-sdk-bot-'))
+    const options = buildBotOptions(
+      {
+        id: 'config-bot',
+        workspace: directory,
+        model: 'claude-opus-4-6',
+        policy: { defaultDecision: 'allow', rules: [] },
+      },
+      {
+        sessionKey: 'config-bot:session-1',
+        sandboxed: true,
+        runtimeConfig: {
+          model: 'claude-sonnet-4-6',
+          reasoningEffort: 'high',
+          approvalPolicy: 'never',
+          sandboxMode: 'workspace-write',
+        },
+      },
+    )
+
+    expect(options).toMatchObject({
+      model: 'claude-opus-4-6',
+      effort: 'high',
+      permissionMode: 'dontAsk',
+      sandbox: { enabled: true, failIfUnavailable: true },
+    })
+    await expect(options.canUseTool!('Read', {}, { signal: new AbortController().signal })).resolves.toEqual({
+      behavior: 'allow',
+    })
+  })
+
+  test('denies tools when imported config requires sandbox but invocation is unsandboxed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claude-sdk-bot-'))
+    const options = buildBotOptions(
+      {
+        id: 'sandbox-bot',
+        workspace: directory,
+        policy: { defaultDecision: 'allow', rules: [] },
+      },
+      {
+        sessionKey: 'sandbox-bot:session-1',
+        runtimeConfig: { sandboxMode: 'read-only' },
+      },
+    )
+
+    await expect(options.canUseTool!('Read', {}, { signal: new AbortController().signal })).resolves.toMatchObject({
+      behavior: 'deny',
+    })
+  })
+
+  test('fails fast on an unsafe imported privilege mode', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claude-sdk-bot-'))
+
+    expect(() => buildBotOptions(
+      { id: 'unsafe-bot', workspace: directory },
+      { sessionKey: 'unsafe-bot:session-1', runtimeConfig: { sandboxMode: 'danger-full-access' } },
+    )).toThrow('unsafe')
+  })
 })

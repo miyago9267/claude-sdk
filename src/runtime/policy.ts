@@ -31,6 +31,8 @@ export interface ToolPolicyRule {
 export interface ToolPolicyConfig {
   defaultDecision: ToolDecision
   rules: ToolPolicyRule[]
+  requireSandbox?: boolean
+  approvalMode?: 'default' | 'deny'
 }
 
 export interface ToolPolicyResult {
@@ -60,10 +62,15 @@ export class ToolPolicyEngine {
     this.config = {
       defaultDecision: config?.defaultDecision ?? 'deny',
       rules: config?.rules ?? [],
+      ...(config?.requireSandbox !== undefined ? { requireSandbox: config.requireSandbox } : {}),
+      ...(config?.approvalMode ? { approvalMode: config.approvalMode } : {}),
     }
   }
 
   evaluate(request: ToolPolicyRequest): ToolPolicyResult {
+    if (this.config.requireSandbox && !request.sandboxed) {
+      return { decision: 'deny', reason: 'sandbox is required' }
+    }
     const rule = this.config.rules.find(
       (candidate) =>
         matches(candidate.tool, request.toolName) &&
@@ -71,6 +78,9 @@ export class ToolPolicyEngine {
         (candidate.environment === undefined || candidate.environment === request.environment),
     )
     const decision = rule?.decision ?? this.config.defaultDecision
+    if (decision === 'ask-human' && this.config.approvalMode === 'deny') {
+      return { decision: 'deny', reason: 'approval is disabled', ...(rule ? { rule } : {}) }
+    }
     if (decision === 'require-sandbox' && !request.sandboxed) {
       return { decision: 'deny', reason: 'sandbox is required', ...(rule ? { rule } : {}) }
     }

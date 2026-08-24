@@ -8,6 +8,7 @@ import {
   type ApprovalProvider,
   type ToolPolicyConfig,
 } from './policy.ts'
+import { runtimeConfigToAgentOptions, type RuntimeConfig } from './config/index.ts'
 
 export interface BotManifest {
   id: string
@@ -40,6 +41,7 @@ export interface BotInvocationContext {
   userId?: string
   environment?: string
   sandboxed?: boolean
+  runtimeConfig?: RuntimeConfig
 }
 
 export class BotRegistry {
@@ -109,8 +111,20 @@ export function buildBotOptions(
   context: BotInvocationContext,
   approval?: ApprovalProvider,
 ): Options {
-  const policy = new ToolPolicyEngine(manifest.policy)
+  const mapping = context.runtimeConfig
+    ? runtimeConfigToAgentOptions(context.runtimeConfig)
+    : { options: {}, policy: { sandboxRequired: false, approvalMode: 'default' as const }, diagnostics: [] }
+  const unsafe = mapping.diagnostics.filter((diagnostic) => diagnostic.level === 'error' || diagnostic.code === 'unsafe')
+  if (unsafe.length > 0) {
+    throw new Error(`unsafe runtime config: ${unsafe.map((diagnostic) => diagnostic.message).join('; ')}`)
+  }
+  const policy = new ToolPolicyEngine({
+    ...manifest.policy,
+    requireSandbox: Boolean(manifest.policy?.requireSandbox || mapping.policy.sandboxRequired),
+    approvalMode: manifest.policy?.approvalMode ?? mapping.policy.approvalMode,
+  })
   return {
+    ...mapping.options,
     cwd: manifest.workspace,
     ...(manifest.model ? { model: manifest.model } : {}),
     ...(manifest.systemPrompt ? { systemPrompt: manifest.systemPrompt } : {}),

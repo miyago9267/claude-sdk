@@ -78,4 +78,28 @@ describe('ToolPolicyEngine', () => {
 
     expect(result).toMatchObject({ behavior: 'deny' })
   })
+
+  test('enforces runtime sandbox requirement before tool rules', () => {
+    const policy = new ToolPolicyEngine({
+      defaultDecision: 'allow',
+      rules: [],
+      requireSandbox: true,
+    })
+
+    expect(policy.evaluate({ ...context, toolName: 'Read', input: {} }).decision).toBe('deny')
+    expect(policy.evaluate({ ...context, sandboxed: true, toolName: 'Read', input: {} }).decision).toBe('allow')
+  })
+
+  test('does not route ask-human to approval when runtime approval is denied', async () => {
+    const policy = new ToolPolicyEngine({
+      defaultDecision: 'ask-human',
+      rules: [],
+      approvalMode: 'deny',
+    })
+    const result = await policy.createCanUseTool(context, async () => 'allow')('Bash', {}, {
+      signal: new AbortController().signal,
+    })
+
+    expect(result).toMatchObject({ behavior: 'deny' })
+  })
 })
