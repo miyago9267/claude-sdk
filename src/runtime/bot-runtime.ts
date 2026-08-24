@@ -23,7 +23,7 @@ import { RuntimeEventBus } from './events.ts'
 import { SessionRegistry } from './sessions.ts'
 import type { RunHandlerContext, RunHandlerResult, RunResult, RunSupervisorOptions } from './supervisor.ts'
 import { RunSupervisor } from './supervisor.ts'
-import type { RunRequest } from './types.ts'
+import type { RunEnvelope, RunRequest } from './types.ts'
 import type { ApprovalProvider } from './policy.ts'
 import type { RuntimeEventSubscriber } from './events.ts'
 
@@ -164,6 +164,10 @@ export class BotRuntime {
 
   async shutdown(reason?: string): Promise<void> {
     await this.supervisor.shutdown(reason)
+  }
+
+  async repairAbandonedRuns(reason = 'process restart'): Promise<RunEnvelope[]> {
+    return this.supervisor.repairAbandonedRuns(reason)
   }
 
   private async executeTurn(

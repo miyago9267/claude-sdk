@@ -49,11 +49,14 @@ export {
 
 export {
   RunSupervisor,
+  FileRunStore,
+  InMemoryRunStore,
   type RunHandler,
   type RunHandlerContext,
   type RunHandlerResult,
   type RunResult,
   type RunSupervisorOptions,
+  type RunStore,
 } from './supervisor.ts'
 
 export {

@@ -12,6 +12,7 @@ export type RuntimeEvent =
   | (RuntimeEventBase & { type: 'run.completed'; run: RunEnvelope; output?: string })
   | (RuntimeEventBase & { type: 'run.failed'; run: RunEnvelope; error: string })
   | (RuntimeEventBase & { type: 'run.cancelled'; reason: string })
+  | (RuntimeEventBase & { type: 'run.abandoned'; run: RunEnvelope; reason: string })
   | (RuntimeEventBase & { type: 'assistant.delta'; text: string })
   | (RuntimeEventBase & { type: 'tool.started'; toolName: string })
   | (RuntimeEventBase & { type: 'tool.progress'; toolName: string; detail?: string })

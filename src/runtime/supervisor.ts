@@ -1,6 +1,58 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
+
 import type { RuntimeEventBus } from './events.ts'
 import { SessionRegistry } from './sessions.ts'
 import type { RunEnvelope, RunRequest, SessionRecord } from './types.ts'
+
+export interface RunStore {
+  save(run: RunEnvelope): Promise<void>
+  list(): Promise<RunEnvelope[]>
+}
+
+export class InMemoryRunStore implements RunStore {
+  private readonly runs = new Map<string, RunEnvelope>()
+
+  async save(run: RunEnvelope): Promise<void> {
+    this.runs.set(run.runId, { ...run })
+  }
+
+  async list(): Promise<RunEnvelope[]> {
+    return [...this.runs.values()].map((run) => ({ ...run }))
+  }
+}
+
+export class FileRunStore implements RunStore {
+  private pending: Promise<void> = Promise.resolve()
+
+  constructor(private readonly filePath: string) {}
+
+  save(run: RunEnvelope): Promise<void> {
+    const operation = this.pending.then(async () => {
+      await mkdir(dirname(this.filePath), { recursive: true })
+      const existing = await this.read()
+      existing.set(run.runId, { ...run })
+      await writeFile(this.filePath, JSON.stringify([...existing.values()], null, 2), 'utf8')
+    })
+    this.pending = operation.catch(() => undefined)
+    return operation
+  }
+
+  async list(): Promise<RunEnvelope[]> {
+    return [...(await this.read()).values()].map((run) => ({ ...run }))
+  }
+
+  private async read(): Promise<Map<string, RunEnvelope>> {
+    try {
+      const content = await readFile(this.filePath, 'utf8')
+      const runs = JSON.parse(content) as RunEnvelope[]
+      return new Map(runs.map((run) => [run.runId, run]))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Map()
+      throw error
+    }
+  }
+}
 
 export interface RunHandlerContext {
   run: RunEnvelope
@@ -32,6 +84,7 @@ export interface RunSupervisorOptions {
   shouldRetry?: (error: unknown) => boolean
   maxConcurrencyPerBot?: number
   maxConcurrencyPerUser?: number
+  runStore?: RunStore
 }
 
 interface QueuedRun {
@@ -91,6 +144,7 @@ export class RunSupervisor {
       resolve = resolvePromise
     })
     this.runs.set(run.runId, run)
+    void this.persist(run)
     this.queue.push({ run, handler, controller: new AbortController(), resolve })
     if (request.idempotencyKey) this.pending.set(request.idempotencyKey, promise)
     void this.emit({
@@ -122,6 +176,28 @@ export class RunSupervisor {
   getRun(runId: string): RunEnvelope | undefined {
     const run = this.runs.get(runId)
     return run ? { ...run } : undefined
+  }
+
+  async repairAbandonedRuns(reason = 'process restart'): Promise<RunEnvelope[]> {
+    const persisted = await this.options.runStore?.list()
+    const candidates = persisted ?? [...this.runs.values()]
+    const abandoned: RunEnvelope[] = []
+    for (const persistedRun of candidates) {
+      if (persistedRun.status !== 'queued' && persistedRun.status !== 'running') continue
+      const run = { ...persistedRun, status: 'abandoned' as const, error: reason, updatedAt: new Date().toISOString() }
+      this.runs.set(run.runId, run)
+      abandoned.push({ ...run })
+      await this.persist(run)
+      await this.emit({
+        type: 'run.abandoned',
+        eventId: crypto.randomUUID(),
+        runId: run.runId,
+        occurredAt: run.updatedAt,
+        run: { ...run },
+        reason,
+      })
+    }
+    return abandoned
   }
 
   listRuns(): RunEnvelope[] {
@@ -187,11 +263,13 @@ export class RunSupervisor {
     run.status = 'running'
     run.attempt = 0
     run.updatedAt = new Date().toISOString()
+    await this.persist(run)
     this.activeRuns.set(run.runId, item)
     try {
       while (run.attempt < Math.max(1, this.options.maxAttempts ?? 1)) {
         run.attempt += 1
         run.updatedAt = new Date().toISOString()
+        await this.persist(run)
         await this.emit({
           type: 'run.started',
           eventId: crypto.randomUUID(),
@@ -224,6 +302,7 @@ export class RunSupervisor {
             run.status = 'failed'
             run.error = message
             run.updatedAt = new Date().toISOString()
+            await this.persist(run)
             await this.emit({
               type: 'run.failed',
               eventId: crypto.randomUUID(),
@@ -237,6 +316,7 @@ export class RunSupervisor {
           }
           run.status = 'completed'
           run.updatedAt = new Date().toISOString()
+          await this.persist(run)
           await this.emit({
             type: 'run.completed',
             eventId: crypto.randomUUID(),
@@ -259,6 +339,7 @@ export class RunSupervisor {
             run.status = 'failed'
             run.error = message
             run.updatedAt = new Date().toISOString()
+            await this.persist(run)
             await this.emit({
               type: 'run.failed',
               eventId: crypto.randomUUID(),
@@ -286,6 +367,7 @@ export class RunSupervisor {
   private finishCancelled(item: QueuedRun, reason: string): void {
     item.run.status = 'cancelled'
     item.run.updatedAt = new Date().toISOString()
+    void this.persist(item.run)
     item.controller.abort(reason)
     void this.emit({
       type: 'run.cancelled',
@@ -302,6 +384,10 @@ export class RunSupervisor {
 
   private async emit(event: Parameters<RuntimeEventBus['publish']>[0]): Promise<void> {
     await this.events?.publish(event)
+  }
+
+  private async persist(run: RunEnvelope): Promise<void> {
+    await this.options.runStore?.save({ ...run })
   }
 
   private incrementCount(counts: Map<string, number>, key: string): void {

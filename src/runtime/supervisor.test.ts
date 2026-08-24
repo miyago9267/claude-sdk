@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { RuntimeEventBus } from './events.ts'
 import { InMemorySessionStore, SessionRegistry } from './sessions.ts'
-import { RunSupervisor } from './supervisor.ts'
+import { FileRunStore, InMemoryRunStore, RunSupervisor } from './supervisor.ts'
 
 const request = {
   botId: 'bot-1',
@@ -235,5 +238,74 @@ describe('RunSupervisor', () => {
     )
 
     expect(result).toMatchObject({ status: 'failed', error: 'run budget exceeded' })
+  })
+
+  test('persists run state and repairs unfinished runs after restart', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claude-sdk-runs-'))
+    try {
+      const store = new FileRunStore(join(directory, 'runs.json'))
+      const first = new RunSupervisor({
+        registry: new SessionRegistry(new InMemorySessionStore()),
+        maxConcurrency: 1,
+        runStore: store,
+      })
+      const blocker = first.submit(
+        { ...request, idempotencyKey: 'message-recovery-blocker' },
+        async ({ signal }) => new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        }),
+      )
+      const queued = first.submit(
+        { ...request, sessionKey: 'bot-1:user-2', idempotencyKey: 'message-recovery' },
+        async () => ({ output: 'never-called' }),
+      )
+      const run = first.listRuns().find((item) => item.idempotencyKey === 'message-recovery')
+      expect(run?.status).toBe('queued')
+      await store.save(run!)
+      void queued
+      void blocker
+
+      const events = new RuntimeEventBus()
+      const eventTypes: string[] = []
+      events.subscribe((event) => eventTypes.push(event.type))
+      const restarted = new RunSupervisor({
+        registry: new SessionRegistry(new InMemorySessionStore()),
+        events,
+        runStore: store,
+      })
+      const abandoned = await restarted.repairAbandonedRuns()
+
+      expect(abandoned).toHaveLength(2)
+      expect(abandoned.find((item) => item.runId === run!.runId)?.status).toBe('abandoned')
+      expect(restarted.getRun(run!.runId)?.error).toBe('process restart')
+      expect(eventTypes).toHaveLength(2)
+      expect((await store.list()).find((item) => item.runId === run!.runId)?.status).toBe('abandoned')
+      first.cancel(run!.runId)
+      await first.shutdown()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('repairs in-memory unfinished runs without a file store', async () => {
+    const store = new InMemoryRunStore()
+    const run = {
+      ...request,
+      runId: 'recovery-run',
+      status: 'running' as const,
+      attempt: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    await store.save(run)
+    const restarted = new RunSupervisor({
+      registry: new SessionRegistry(new InMemorySessionStore()),
+      runStore: store,
+    })
+    expect((await restarted.repairAbandonedRuns('test restart')).find((item) => item.runId === run.runId)).toMatchObject({
+      runId: run.runId,
+      status: 'abandoned',
+      error: 'test restart',
+    })
   })
 })

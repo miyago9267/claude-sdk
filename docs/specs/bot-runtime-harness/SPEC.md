@@ -486,7 +486,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - [ ] Add provider/model fallback and rate-limit handling。
 - [ ] Add sandbox/worktree adapters and resource limits。
 - [ ] Add queryable traces, metrics and audit export。
-- [ ] Add crash recovery and abandoned-run repair tooling。
+- [x] Add crash recovery and abandoned-run repair tooling。
 - [ ] Review and remove optimize utilities replaced by official SDK features。
 
 ## Existing files and expected future areas
@@ -522,7 +522,6 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - `src/runtime/scheduler.ts` - future scheduler extensions such as catch-up policy and job chaining。
 - `src/runtime/memory.ts` - memory provider and scope contract。
 - `src/runtime/bots.ts` - bot manifest and workspace bootstrap。
-- `src/runtime/delegation.ts` - parent/child orchestration and timeout/result routing。
 - `src/runtime/delegation.ts` - parent/child orchestration。
 - `src/runtime/observability.ts` - traces, audit and metrics。
 
@@ -537,6 +536,12 @@ scheduler prompt path and injected bridge path are implemented. The default brid
 without `OllamaServerConfig.runtime` retains its legacy history-keyed session pool;
 runtime bridge mode currently reports zeroed protocol usage because generic
 `RunResult` does not yet expose provider token details.
+
+Recovery limitations: `RunSupervisor` persists serializable run envelopes through
+an optional `RunStore` and exposes `repairAbandonedRuns()` for startup repair;
+handlers and in-flight SDK queries are not resumed automatically after process
+restart. Hosts must invoke repair before accepting new work and decide whether
+abandoned runs should be retried or surfaced for operator handling.
 
 Phase 2 limitations: policy decisions are currently in-memory, approval has no
 durable request store or timeout queue, bootstrap documents are returned as

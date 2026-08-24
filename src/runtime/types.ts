@@ -6,6 +6,7 @@ export type RunStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
+  | 'abandoned'
 
 export interface RunSource {
   platform?: string
