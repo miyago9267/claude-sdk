@@ -42,6 +42,21 @@ export function resolveRuntimeConfig(layers: ConfigLayer[]): ResolvedRuntimeConf
       }
       config.environment = { ...(config.environment ?? {}), [key]: value }
     }
+    for (const rule of layer.config.toolRules ?? []) {
+      const existingIndex = config.toolRules?.findIndex((candidate) => candidate.tool === rule.tool) ?? -1
+      if (existingIndex >= 0) {
+        diagnostics.push({
+          level: 'warning',
+          code: 'override',
+          field: `toolRules.${rule.tool}`,
+          source: layer.source,
+          message: `tool rule from ${layer.source} overrides an earlier value`,
+        })
+        config.toolRules![existingIndex] = rule
+      } else {
+        config.toolRules = [...(config.toolRules ?? []), rule]
+      }
+    }
   }
 
   return { config, sources, diagnostics }

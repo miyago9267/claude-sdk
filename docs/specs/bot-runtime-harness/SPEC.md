@@ -87,6 +87,8 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
   filtering 與 sensitive-field redaction。
 - Config compatibility foundation：provider-neutral `RuntimeConfig`、read-only
   Codex TOML import、layer precedence 與 unsupported/override diagnostics。
+- Claude settings foundation：read-only `settings.json` import for model、fallback、
+  environment 與 broad tool permissions。
 - Config mapping foundation：supported fields map to Claude SDK options and
   explicit runtime policy inputs with fail-closed privilege handling。
 - Bot options integration：`runtimeConfig` 可由 invocation context 傳入
@@ -379,6 +381,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 
 - [x] Define provider-neutral `RuntimeConfig` and source diagnostics。
 - [x] Implement read-only Codex TOML adapter。
+- [x] Implement read-only Claude `settings.json` adapter。
 - [x] Implement precedence resolver for imported config、project config、bot
   manifest 與 per-run override。
 - [x] Map supported config into SDK options and runtime policy with fail-closed
@@ -468,8 +471,9 @@ provided redaction layer before persistence.
 
 Config compatibility limitations: `runtimeConfig` integration is available at
 invocation time, while layer loading/resolution remains host-owned. Claude
-`settings.json` adapter and provider fallback remain future work;
-`danger-full-access` intentionally stays sandboxed with an unsafe diagnostic.
+hooks、argument-constrained permission patterns、additional directories and
+provider fallback remain future work; `danger-full-access` intentionally stays
+sandboxed with an unsafe diagnostic.
 
 Phase 3 limitations: cron uses UTC 5-field expressions only and scheduler does not
 yet provide missed-run/catch-up policy, job chaining or script-only jobs. Memory

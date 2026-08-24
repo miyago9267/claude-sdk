@@ -120,6 +120,10 @@ export function buildBotOptions(
   }
   const policy = new ToolPolicyEngine({
     ...manifest.policy,
+    rules: [
+      ...(manifest.policy?.rules ?? []),
+      ...(mapping.policy.toolRules ?? []),
+    ],
     requireSandbox: Boolean(manifest.policy?.requireSandbox || mapping.policy.sandboxRequired),
     approvalMode: manifest.policy?.approvalMode ?? mapping.policy.approvalMode,
   })

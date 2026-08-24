@@ -1,5 +1,13 @@
 export type RuntimeSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
 
+export type RuntimeToolDecision = 'allow' | 'deny' | 'ask-human'
+
+export interface RuntimeToolRule {
+  tool: string
+  decision: RuntimeToolDecision
+  reason?: string
+}
+
 export interface RuntimeConfig {
   model?: string
   fallbackModels?: string[]
@@ -7,6 +15,7 @@ export interface RuntimeConfig {
   sandboxMode?: RuntimeSandboxMode
   approvalPolicy?: string
   environment?: Record<string, string>
+  toolRules?: RuntimeToolRule[]
 }
 
 export interface ConfigDiagnostic {

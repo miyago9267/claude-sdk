@@ -6,6 +6,7 @@ export interface RuntimePolicyInputs {
   sandboxRequired: boolean
   sandboxMode?: RuntimeSandboxMode
   approvalMode: 'default' | 'deny'
+  toolRules?: RuntimeConfig['toolRules']
 }
 
 export interface RuntimeConfigMapping {
@@ -20,6 +21,7 @@ export function runtimeConfigToAgentOptions(config: RuntimeConfig, source = 'run
   const policy: RuntimePolicyInputs = {
     sandboxRequired: false,
     approvalMode: 'default',
+    ...(config.toolRules ? { toolRules: config.toolRules } : {}),
   }
 
   if (config.model !== undefined) options.model = config.model

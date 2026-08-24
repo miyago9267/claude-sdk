@@ -1,4 +1,11 @@
 export {
+  importClaudeSettings,
+  loadClaudeSettings,
+  type ClaudeSettingsDocument,
+  type ClaudeSettingsOptions,
+} from './claude.ts'
+
+export {
   importCodexConfig,
   loadCodexConfig,
   parseCodexToml,
@@ -20,4 +27,6 @@ export type {
   ResolvedRuntimeConfig,
   RuntimeConfig,
   RuntimeSandboxMode,
+  RuntimeToolDecision,
+  RuntimeToolRule,
 } from './types.ts'
