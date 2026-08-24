@@ -16,6 +16,12 @@ export {
 export * from './config/index.ts'
 
 export {
+  BotRuntime,
+  type BotRuntimeOptions,
+  type BotRuntimeRequest,
+} from './bot-runtime.ts'
+
+export {
   DeliveryRouter,
   InMemoryDeliveryAdapter,
   type DeliveryAdapter,
