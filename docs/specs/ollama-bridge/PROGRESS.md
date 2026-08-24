@@ -44,3 +44,6 @@
 
 - VS Code Copilot 對 Ollama 協定的實際行為，doc 沒寫死，Phase 1 完成就要實測。
 - Port 預設 11434（跟真 Ollama 同一個），跟既有 Ollama 安裝會衝突 → 提供 `--port` override。
+# Ollama bridge progress（歷史記錄）
+
+> 本文件保留 bridge 開發過程。client CLI 已移除；目前由 agent host 直接呼叫 `serveOllamaBridge()`。

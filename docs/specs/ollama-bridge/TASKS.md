@@ -47,3 +47,6 @@
 - [ ] 手動 E2E：Copilot Chat 跑一輪
 - [ ] 手動 E2E：Copilot Agent 跑一輪（含 tool call）
 - [ ] `bun test` 全綠
+# Ollama bridge tasks（歷史記錄）
+
+> CLI integration tasks 已封存，不是目前 package 的待辦；bridge 目前以 programmatic API 維護。

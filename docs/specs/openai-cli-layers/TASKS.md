@@ -34,3 +34,6 @@
 - [x] `src/cli/args.ts` + `src/cli/bin.ts` - `--tui` flag dispatch
 - [x] `bin/` 加進 .gitignore；package.json `files` 包 `cmd/tui/` 與 build script
 - [x] README 加 TUI 段落 + build 指引
+# OpenAI adapter + CLI harness tasks（歷史記錄）
+
+> CLI/TUI implementation tasks 已封存；client-facing source 已從 repository 移除。

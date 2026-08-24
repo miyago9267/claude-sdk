@@ -1,8 +1,9 @@
 # @lovely-office/sdk -- 規格文件
 
-> ⚠️ **部分過時。** 本規格的 patch / fork 段落屬 0.2.x 時代;自 0.3.x 遷移起 patch 已全數移除,
-> 持久 session 改用公開 `query()` streaming-input。三大對外管道現為:library import、OpenAI/Ollama
-> bridge、bonus TUI。最新事實以 README 與 `docs/specs/` 為準。
+> ⚠️ **部分過時。** 本規格的 patch / fork 段落屬 0.2.x 時代；自 0.3.x 遷移起內部 binary patch 已移除，
+> 僅保留上層的 cumulative usage diff 與產品 wrapper。持久 session 改用公開 `query()` streaming-input。
+> 目前對外管道為 library import 與 OpenAI/Ollama protocol bridge；client CLI/TUI 已移除。
+> 最新事實以 README 與 `docs/specs/` 為準。
 
 ## 狀態
 
@@ -10,12 +11,12 @@
 - status: in_progress
 - scope: cumulative modelUsage semantic hardening
 
-> 從 `@anthropic-ai/claude-agent-sdk` v0.2.77 fork，加上 6 個 token 優化 patch。
+> 歷史描述：曾從 `@anthropic-ai/claude-agent-sdk` v0.2.77 fork，加上 6 個 token 優化 patch；目前已改用官方 0.3.x SDK，只有 usage snapshot diff 與產品層 wrapper 保留。
 
 ## 概述
 
 把 Claude Max 訂閱變成可輪詢的 AI 後端，用於多 agent 協作迴圈。
-與官方 SDK 完全相容（drop-in replacement），額外加入 6 個精準 patch 減少 token 浪費。
+以官方 SDK 為核心，額外提供 persistent-session adapter、context lifecycle、bridge 與可選的 optimization utilities。
 
 ## 任務
 

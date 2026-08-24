@@ -1,4 +1,6 @@
-# CLI Feature Survey & Adoption Plan
+# CLI Feature Survey & Adoption Plan（歷史規格）
+
+> 本文件記錄已移除的 client CLI/TUI 產品面的研究，不代表目前 package surface 或待辦方向。
 
 ## What
 

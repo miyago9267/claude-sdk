@@ -22,7 +22,8 @@ SOFTWARE.
 
 ---
 
-This package patches @anthropic-ai/claude-agent-sdk at install time.
-The original SDK is subject to Anthropic's own license terms.
-This MIT license covers only the original code in this repository
-(context-manager.ts, patch scripts, documentation).
+This package wraps @anthropic-ai/claude-agent-sdk without modifying its
+bundled runtime at install time. The original SDK is subject to Anthropic's
+own license terms. This MIT license covers only the original code in this
+repository (source adapters, context management, bridge, scripts, and
+documentation).

@@ -74,8 +74,8 @@ owner: miyago
 - 真正 client-side execution（model 動 IDE workspace、IDE 提供 review UI）需要繞過 SDK 打 Anthropic Messages API，違反「走 claude-agent-sdk 吃訂閱額度」原則。
 
 **操作慣例**:
-- 在想動的 project root 起 server：`cd ~/Project/foo && claude-sdk --ollama`
-- 多 project 場景要起多個 bridge instance（不同 port），或 user 自己 toggle `claude-sdk` 來回切
+- 在想動的 project root，由 agent host 呼叫 `serveOllamaBridge({ cwd: projectRoot })`。
+- 多 project 場景要由各 host process 起多個 bridge instance（不同 port）。
 
 **Trade-off**:
 - 不 advertise `tools` 讓 Agent mode picker 隱藏 Claude，user 在 Copilot 中只能從 Chat mode 用（這是預期 — Agent mode 期待 client tool exec，我們做不到）。
@@ -194,7 +194,7 @@ owner: miyago
 - Streaming 時 SDK 跑 Read/Bash 會看到 `message.tool_calls` frame 推出
 - `think: true` request 看到 `message.thinking` frame
 
-### Phase 4：CLI 整合 + Copilot 實測
+### Phase 4：CLI 整合 + Copilot 實測（歷史階段，現已移除 CLI）
 
 範圍：
 - `src/cli/args.ts` 加 `--ollama` flag（預設 port 11434）

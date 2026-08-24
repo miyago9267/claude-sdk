@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/scripts/check-agent-sdk-update.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

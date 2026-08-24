@@ -1,4 +1,6 @@
-# OpenAI Adapter + CLI Harness
+# OpenAI Adapter + CLI Harness（歷史規格）
+
+> 本文件記錄 client CLI/TUI 時期的設計決策。CLI、Bubbletea TUI 與相關 package exports 已移除；目前請以 `src/ollama/` 的 protocol bridge 與 README 為準。
 
 > **STATUS: SUPERSEDED (2026-04-29)** — `src/openai/` removed in favour of
 > `docs/specs/ollama-bridge/`. The CLI Harness + Bubbletea TUI portions of

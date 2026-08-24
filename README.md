@@ -1,12 +1,11 @@
 # @miyago/claude-sdk
 
-Subscription-backed wrapper around [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript) (0.3.x). Three surfaces:
+Subscription-backed wrapper around [`@anthropic-ai/claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-typescript) (0.3.238), focused on building agent bots and protocol adapters:
 
 - **Library** — re-exports the agent SDK plus a context-lifecycle manager.
 - **API bridge** — an OpenAI-compatible (`/v1/chat/completions`) + Ollama-native (`/api/*`) HTTP server, so any harness (OpenAI SDK, LiteLLM, Aider, Continue, GitHub Copilot Chat…) can drive Claude on your Pro/Max subscription.
-- **TUI** — a bonus full-screen terminal front-end.
 
-> **History:** versions ≤ 1.6.0 pinned agent-sdk 0.2.x and reverse-engineered a `sdk.mjs` patch to make the experimental `unstable_v2_createSession()` persistent session pass full options and hit the prompt cache. As of the 0.3.x migration that patch is **gone** — the persistent session is now the public `query()` streaming-input API, and SDK prompt caching is native. The old RE notes live in `docs/v2-spec/` and `docs/learning/` for the record.
+> **History:** versions ≤ 1.6.0 pinned agent-sdk 0.2.x and reverse-engineered a `sdk.mjs` patch to make the experimental `unstable_v2_createSession()` persistent session pass full options and hit the prompt cache. As of the 0.3.x migration that patch is **gone** — the persistent session is now the public `query()` streaming-input API, and SDK prompt caching is native. The current wrapper is pinned to agent-sdk 0.3.238; the old RE notes live in `docs/v2-spec/` and `docs/learning/` for the record.
 
 ## Why a persistent session
 
@@ -19,6 +18,12 @@ bun add @miyago/claude-sdk
 ```
 
 No postinstall, no patching — it consumes the official SDK as-is.
+
+The repository checks npm for Agent SDK updates every Monday and opens a PR
+only after the lockfile install, test suite, and Bun build pass. Run
+`bun run update:agent-sdk` locally to perform the same update and verification.
+At Claude Code session start, a project hook performs a read-only version check
+and prints the update command when npm has a newer release.
 
 ## Quick Start
 
@@ -83,12 +88,7 @@ manager.stopKeepalive()
 
 ## API bridge (OpenAI + Ollama)
 
-Run a local server that speaks both the OpenAI Chat Completions wire format and the Ollama-native protocol, on Ollama's default port (11434):
-
-```bash
-claude-sdk --ollama                 # port 11434
-claude-sdk --ollama --port 11500    # custom port
-```
+Start the bridge from your own process. It speaks both the OpenAI Chat Completions wire format and the Ollama-native protocol:
 
 ```typescript
 import { serveOllamaBridge } from '@miyago/claude-sdk/ollama'
@@ -113,33 +113,11 @@ Each chat call runs a full server-side agent turn in the bridge's cwd (built-in 
 
 ### GitHub Copilot Chat
 
-1. Run `claude-sdk --ollama`.
+1. Start `serveOllamaBridge()` in your agent host process.
 2. VS Code → Copilot Chat → **Manage Models** → **Ollama** → point at the URL.
 3. Pick `claude-opus-4-8` / `claude-sonnet-4-6` / etc. Chat and Agent mode both route through the bridge.
 
 See `docs/specs/ollama-bridge/SPEC.md` for ADRs.
-
-## CLI
-
-`claude-sdk` is a thin launcher for the two runtime surfaces; everything else is the library.
-
-```bash
-claude-sdk --ollama [--port n] [--host addr] [--model id]   # HTTP bridge
-claude-sdk --tui [--model sonnet]                           # bonus TUI
-claude-sdk --help | --version
-```
-
-It accepts the official `claude` flags where relevant (`--model`, `--system-prompt`, `--add-dir`, `--allowedTools`, `--permission-mode`, `--cwd`, `-c/--continue`, `-r/--resume`…); unsupported official flags are parsed and reported as ignored.
-
-### Bubbletea TUI (`--tui`)
-
-Optional Go (bubbletea) front-end. The TS process runs the session and streams NDJSON to a spawned Go binary that handles rendering/input. Build once (Go 1.24+):
-
-```bash
-bash scripts/build-tui.sh   # writes ./bin/claude-sdk-tui
-```
-
-The binary is platform-specific and not shipped in the npm package. See `cmd/tui/` for the IPC schema.
 
 ## Exports
 
@@ -156,8 +134,6 @@ import { serveOllamaBridge, createOllamaServer, buildTagsResponse } from '@miyag
 // Shared conversation-history primitives
 import { buildPromptFromHistory, extractAssistantBlocks, type HistoryMessage } from '@miyago/claude-sdk/shared'
 
-// CLI primitives (also via `bin: claude-sdk`)
-import { parseArgs, HELP_TEXT, runTui } from '@miyago/claude-sdk/cli'
 ```
 
 ## Notes
