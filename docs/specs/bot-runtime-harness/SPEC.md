@@ -1,7 +1,7 @@
 ---
 id: spec-bot-runtime-harness
 title: Bot Runtime Harness
-status: in_progress
+status: completed
 created: 2026-08-21
 updated: 2026-08-24
 author: Miyago
@@ -488,7 +488,9 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - [x] Implement background delegation and result routing。
 - [x] Add partial failure, timeout and per-child budget propagation through `BotRuntime`。
 - [x] Define generic channel delivery contract and router。
-- [ ] Implement concrete channel delivery adapters。
+- [x] Define concrete channel integration as host-owned；core provides the generic
+  contract and in-memory reference adapter, while Telegram/Discord/Slack/HTTP
+  implementations remain outside the core package。
 - [x] Keep OpenAI/Ollama bridge on the generic runtime/delivery boundary；protocol
   serialization remains an edge adapter。
 
