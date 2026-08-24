@@ -18,14 +18,21 @@ priority: high
 
 ## Purpose
 
-把本 repo 從「Claude client / protocol wrapper」定位成可長期運作的
-agent-bot runtime substrate，目標產品形態接近 OpenClaw 或 Hermes Agent：
+把本 repo 定位成以官方 Claude Agent SDK 為執行核心、可長期運作的
+agent-bot runtime substrate，目標產品形態接近 OpenClaw 或 Hermes Agent。
+Package 應同時保留低階可組裝元件與一個能直接啟動 bot execution 的
+`BotRuntime` composition root：
 
 - bot 能接收外部事件並持續維持自己的 identity、session 與 memory。
 - bot 能處理即時訊息、cron、webhook、heartbeat 與 background job。
 - bot 能被限制工具、權限、workspace、網路、預算與執行時間。
 - bot 能在 crash、timeout、rate limit 或 process restart 後恢復。
 - bot 能把執行狀態與結果送回不同 channel，而不把 channel UX 寫死在 SDK。
+
+產品分層固定為：官方 SDK 負責 model turn、agent loop、tools、MCP 與
+permissions；本 repo 負責 session、run orchestration、policy、scheduler、
+memory、audit、delivery 與 config compatibility；Ollama/OpenAI bridge 是邊界
+adapter。CLI 與 TUI 不屬於產品核心。
 
 ## Scope
 
@@ -43,6 +50,7 @@ agent-bot runtime substrate，目標產品形態接近 OpenClaw 或 Hermes Agent
 - Usage、cost、trace、audit 與 operational observability。
 - Provider/model routing 與 fallback policy。
 - OpenAI/Ollama 等 protocol adapter 的 runtime integration。
+- `BotRuntime` composition root 與 host adapter contract。
 
 ### Out of scope
 
@@ -97,39 +105,68 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
   與 in-memory adapter；實際 channel adapter 仍由外部整合層提供。
 - CI/CD Agent SDK update 與 SessionStart version check。
 
-目前缺少 durable bot runtime；`SessionPool` 只能當 bridge cache，不能當正式的
+目前 runtime 元件已分散存在，但缺少 `BotRuntime` composition root 將它們串成
+單一 bot execution pipeline；`SessionPool` 只能當 bridge cache，不能當正式的
 bot session store。
 
 ## Architecture
 
 ```text
-External events
-  message / cron / webhook / heartbeat / job
+Public package layers
+  Official Agent SDK core
+    query / loop / tools / MCP / agents / permissions
               |
-              v
-       Event ingress + normalization
+  SDK wrappers
+    context lifecycle / persistent query session / optimization
               |
-              v
-        Run Supervisor / Queue
-          |       |       |
-          |       |       +-- Scheduler
-          |       +---------- Policy / Approval
-          +------------------ Session Registry
-                              |
-                              v
-                    Official Agent SDK query()
-                    loop / tools / MCP / agents
-                              |
-              +---------------+----------------+
-              |                                |
-              v                                v
-       Event stream / audit              Memory provider
+  Bot Runtime Harness
+    BotRuntime composition root
+    config / manifest / session / supervisor / policy / scheduler
+    memory / audit / event bus / delivery
               |
-              v
-       Channel / protocol delivery
+  Edge adapters
+    Ollama / OpenAI protocol bridge / host-provided channels
+
+BotRuntime execution path
+  External event
+       |
+       v
+  normalize + resolve config + bot manifest
+       |
+       v
+  session registry + run supervisor
+       |
+       v
+  policy / approval / budget boundary
+       |
+       v
+  official Agent SDK query()
+       |
+       +--> runtime events --> audit
+       +--> memory provider
+       +--> delivery router --> host channel adapter
 ```
 
 ## Requirements
+
+### R0. Bot runtime composition root
+
+`BotRuntime` 是 host 使用的主要 runtime entry，負責組合既有 primitives，
+不重新實作官方 Agent SDK 的 loop 或 tool execution。它至少必須能：
+
+- 接收 normalized external event，建立唯一 `runId` 與 idempotency scope。
+- 解析 runtime config、bot manifest、workspace、session 與 policy。
+- 將 run 交給 `RunSupervisor`，序列化同一 session 的 turns。
+- 以官方 SDK `query()` 執行 agent turn，保留 streaming 與 Query controls。
+- 將 progress、tool、permission、result 與 error 轉成 runtime events。
+- 將結果交給 `AuditRecorder`、`MemoryProvider` 與 `DeliveryRouter`。
+- 讓 host 注入 channel adapter、approval provider、persistent stores 與
+  execution handler，而不把 Telegram、Discord、Slack 或 HTTP UX 寫死。
+- 提供可拆開使用的底層元件；`BotRuntime` 是 composition convenience，不能
+  取代 `RunSupervisor`、`SessionRegistry` 或官方 SDK public API。
+
+第一個可用 slice 應先支援 message / manual run；scheduler、webhook、heartbeat
+與 protocol bridge 都透過同一個 runtime entry 進入，不建立第二條 execution path。
 
 ### R1. Run envelope
 
@@ -337,6 +374,18 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
   - **Reason:** Bot product 的缺口在 session、job、policy、state、delivery 與
     operations，而不是模型 turn execution。
   - **By:** Miyago (2026-08-21)
+- **以 `BotRuntime` 作為 composition root，保留 primitives 可獨立組合。**
+  - **Reason:** 目前各 runtime module 已存在，但 host 仍需自行接線；先補一個
+    穩定 entry 才能讓 SDK 真正服務 agent bot，同時不犧牲進階使用者的可組裝性。
+  - **By:** Miyago (2026-08-24)
+- **Protocol bridge 維持 edge adapter，不作為 bot runtime 的核心入口。**
+  - **Reason:** Ollama/OpenAI 是相容層與外部 client 入口；bot、scheduler、
+    webhook 與 messaging channel 應共用同一個 `BotRuntime` execution path。
+  - **By:** Miyago (2026-08-24)
+- **先完成 runtime assembly，再擴充功能矩陣。**
+  - **Reason:** 既有 session、policy、scheduler、memory、audit 與 delivery 若未
+    經同一條 pipeline 驗證，繼續新增 channel 或 delegation 只會擴大接線成本。
+  - **By:** Miyago (2026-08-24)
 - **Core 不內建 channel UX。**
   - **Reason:** 同一 runtime 應能服務 messaging、HTTP、protocol adapter 與
     internal worker。
@@ -399,7 +448,18 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - [x] Define `MemoryProvider` and scope model。
 - [x] Implement Markdown/filesystem memory provider with explicit write API and scope isolation。
 
-### Phase 4: Multi-agent and delivery
+### Phase 4: Runtime assembly
+
+- [ ] Define `BotRuntime` constructor, host dependency injection and lifecycle contract。
+- [ ] Implement one message/manual execution path through config、manifest、session、
+  supervisor、official SDK、events、audit and delivery。
+- [ ] Preserve SDK streaming and Query controls through the runtime result interface。
+- [ ] Add runtime integration tests for idempotency、same-session serialization、
+  policy denial、approval、timeout、audit and delivery。
+- [ ] Export `BotRuntime` from `@miyago/claude-sdk/runtime` and the root package。
+- [ ] Route scheduler jobs and protocol bridge requests through the same runtime entry。
+
+### Phase 5: Multi-agent and concrete delivery
 
 - [ ] Define parent/child delegation events。
 - [ ] Implement background delegation and result routing。
@@ -408,7 +468,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - [ ] Implement concrete channel delivery adapters。
 - [ ] Keep OpenAI/Ollama bridge on the generic delivery contract。
 
-### Phase 5: Production hardening
+### Phase 6: Production hardening
 
 - [ ] Add provider/model fallback and rate-limit handling。
 - [ ] Add sandbox/worktree adapters and resource limits。
@@ -434,9 +494,11 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - `src/runtime/cron.ts` - UTC 5-field cron parser and next-occurrence calculation。
 - `src/runtime/memory.ts` - scoped memory provider contract and in-memory/Markdown implementations。
 - `src/runtime/delivery.ts` - channel-independent delivery contract, router and in-memory adapter。
+- `src/runtime/bot-runtime.ts` - planned composition root for the common bot execution path。
 
 ### Planned modules
 
+- `src/runtime/bot-runtime.ts` - runtime composition root and host dependency injection。
 - `src/runtime/events.ts` - normalized inbound/outbound event contract。
 - `src/runtime/audit.ts` - event recorder, append-only JSONL store and redaction。
 - `src/runtime/runs.ts` - run envelope and state machine。
@@ -455,6 +517,11 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 `cron.ts`, `memory.ts`, `delivery.ts` and `index.ts`. The remaining paths are
 planning targets, not a commitment to preserve the exact module layout during
 implementation.
+
+Runtime assembly limitations: `BotRuntime` composition root is not implemented yet;
+callers currently need to wire the runtime modules themselves. Scheduler and
+protocol bridge also have their own host-facing entry points until they are routed
+through the common runtime path.
 
 Phase 2 limitations: policy decisions are currently in-memory, approval has no
 durable request store or timeout queue, bootstrap documents are returned as
