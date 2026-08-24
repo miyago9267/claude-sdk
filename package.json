@@ -3,12 +3,9 @@
   "version": "1.6.0",
   "type": "module",
   "private": false,
-  "description": "Patched Claude Agent SDK — V2 persistent session, context management, Ollama-compatible bridge for IDE clients (GitHub Copilot Chat, etc.), CLI harness",
+  "description": "Claude Agent SDK wrapper — persistent sessions, context management, and Ollama-compatible protocol bridge",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "bin": {
-    "claude-sdk": "src/cli/bin.ts"
-  },
   "exports": {
     ".": {
       "bun": "./src/index.ts",
@@ -34,21 +31,21 @@
       "import": "./src/ollama/index.ts",
       "default": "./src/ollama/index.ts"
     },
-    "./cli": {
-      "bun": "./src/cli/index.ts",
-      "types": "./src/cli/index.ts",
-      "import": "./src/cli/index.ts",
-      "default": "./src/cli/index.ts"
+    "./runtime": {
+      "bun": "./src/runtime/index.ts",
+      "types": "./src/runtime/index.ts",
+      "import": "./src/runtime/index.ts",
+      "default": "./src/runtime/index.ts"
     }
   },
   "scripts": {
     "test": "bun test src/",
-    "ollama": "bun src/cli/bin.ts --ollama",
-    "tui": "bun src/cli/bin.ts --tui",
-    "build:tui": "bash scripts/build-tui.sh"
+    "update:agent-sdk": "bash scripts/update-agent-sdk.sh"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.177",
+    "@anthropic-ai/claude-agent-sdk": "0.3.238",
+    "@anthropic-ai/sdk": "0.120.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "hono": "^4.12.15"
   },
   "peerDependencies": {
@@ -60,9 +57,7 @@
     "src/optimize/",
     "src/shared/",
     "src/ollama/",
-    "src/cli/",
-    "cmd/tui/",
-    "scripts/build-tui.sh"
+    "src/runtime/"
   ],
   "repository": {
     "type": "git",
@@ -79,6 +74,7 @@
     "ollama",
     "ollama-bridge",
     "github-copilot",
-    "cli"
+    "agent-bot",
+    "api-bridge"
   ]
 }

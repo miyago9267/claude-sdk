@@ -1,4 +1,4 @@
-// Core SDK (re-export from patched @anthropic-ai/claude-agent-sdk)
+// Core SDK (re-export from the official @anthropic-ai/claude-agent-sdk)
 export * from '@anthropic-ai/claude-agent-sdk'
 
 // Context management
@@ -15,3 +15,6 @@ export {
 
 // Optimize utilities
 export * from './optimize/index.js'
+
+// Bot runtime foundation
+export * from './runtime/index.js'
