@@ -7,9 +7,10 @@ import {
   type SDKAssistantMessage,
   type SDKMessage,
   type SDKResultMessage,
+  type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
 
-import { extractAssistantBlocks } from '../shared/messages.ts'
+import { extractAssistantBlocks, type ImageAttachment } from '../shared/messages.ts'
 import {
   BotRegistry,
   buildBotOptions,
@@ -24,9 +25,12 @@ import type { RunHandlerContext, RunHandlerResult, RunResult, RunSupervisorOptio
 import { RunSupervisor } from './supervisor.ts'
 import type { RunRequest } from './types.ts'
 import type { ApprovalProvider } from './policy.ts'
+import type { RuntimeEventSubscriber } from './events.ts'
 
 export interface BotRuntimeRequest extends RunRequest {
   prompt: string
+  systemPrompt?: string
+  attachments?: ImageAttachment[]
   runtimeConfig?: RuntimeConfig
   sandboxed?: boolean
   deliveryTarget?: string
@@ -119,6 +123,10 @@ export class BotRuntime {
     return this.supervisor.getRun(runId)
   }
 
+  subscribe(subscriber: RuntimeEventSubscriber): () => boolean {
+    return this.events?.subscribe(subscriber) ?? (() => false)
+  }
+
   cancel(runId: string): boolean {
     return this.supervisor.cancel(runId)
   }
@@ -170,6 +178,7 @@ export class BotRuntime {
       ...(request.runtimeConfig ? { runtimeConfig: request.runtimeConfig } : {}),
     }
     const options = buildBotOptions(manifest, invocation, this.approval)
+    if (request.systemPrompt !== undefined) options.systemPrompt = request.systemPrompt
     if (request.model) options.model = request.model
     if (request.workspace) options.cwd = request.workspace
     if (context.session.sdkSessionId) options.resume = context.session.sdkSessionId
@@ -178,7 +187,7 @@ export class BotRuntime {
     const abortQuery = () => queryAbortController.abort(context.signal.reason)
     context.signal.addEventListener('abort', abortQuery, { once: true })
 
-    const activeQuery = this.query({ prompt: request.prompt, options })
+    const activeQuery = this.query({ prompt: toQueryPrompt(request), options })
     this.activeQueries.set(context.run.runId, activeQuery)
     let resultMessage: SDKResultMessage | undefined
     let streamedText = ''
@@ -264,4 +273,26 @@ export class BotRuntime {
       })
     }
   }
+}
+
+function toQueryPrompt(request: BotRuntimeRequest): string | AsyncIterable<SDKUserMessage> {
+  if (!request.attachments?.length) return request.prompt
+  return (async function* (): AsyncGenerator<SDKUserMessage> {
+    const content = [
+      ...(request.prompt ? [{ type: 'text', text: request.prompt }] : []),
+      ...request.attachments!.map((attachment) => ({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: attachment.mediaType,
+          data: attachment.base64,
+        },
+      })),
+    ]
+    yield {
+      type: 'user',
+      message: { role: 'user', content },
+      parent_tool_use_id: null,
+    } as unknown as SDKUserMessage
+  })()
 }

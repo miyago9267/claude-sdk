@@ -108,6 +108,9 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
   runtime path。
 - Delivery foundation：channel-independent `DeliveryRouter`、lifecycle events
   與 in-memory adapter；實際 channel adapter 仍由外部整合層提供。
+- Protocol bridge integration：`OllamaServerConfig.runtime` 可將 Ollama/OpenAI
+  non-stream 與 streaming requests 導入 `BotRuntime`，保留 legacy bridge mode 供
+  existing hosts 遷移。
 - CI/CD Agent SDK update 與 SessionStart version check。
 
 目前 runtime 元件已分散存在，但缺少 `BotRuntime` composition root 將它們串成
@@ -463,7 +466,8 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
   delivery、idempotency、policy denial and approval。
 - [x] Export `BotRuntime` from `@miyago/claude-sdk/runtime` and the root package。
 - [x] Route scheduler prompt jobs through the same runtime entry。
-- [ ] Route Ollama/OpenAI protocol bridge requests through the same runtime entry。
+- [x] Route Ollama/OpenAI protocol bridge requests through the same runtime entry when
+  a host injects `BotRuntime`。
 
 ### Phase 5: Multi-agent and concrete delivery
 
@@ -523,9 +527,11 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 planning targets, not a commitment to preserve the exact module layout during
 implementation.
 
-Runtime assembly limitations: the initial `BotRuntime` manual/message slice and
-scheduler prompt path are implemented. Ollama/OpenAI bridge routing remains, and
-the bridge still owns its history-keyed session pool until that migration is complete.
+Runtime assembly limitations: the initial `BotRuntime` manual/message slice,
+scheduler prompt path and injected bridge path are implemented. The default bridge
+without `OllamaServerConfig.runtime` retains its legacy history-keyed session pool;
+runtime bridge mode currently reports zeroed protocol usage because generic
+`RunResult` does not yet expose provider token details.
 
 Phase 2 limitations: policy decisions are currently in-memory, approval has no
 durable request store or timeout queue, bootstrap documents are returned as

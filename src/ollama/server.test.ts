@@ -6,12 +6,47 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 
 import {
   BRIDGE_VERSION,
   DEFAULT_EXPOSED_MODELS,
   createOllamaServer,
 } from './server.ts'
+import { BotRegistry } from '../runtime/bots.ts'
+import { BotRuntime } from '../runtime/bot-runtime.ts'
+import { RuntimeEventBus } from '../runtime/events.ts'
+import { InMemorySessionStore, SessionRegistry } from '../runtime/sessions.ts'
+
+function makeRuntime(options: { events?: RuntimeEventBus } = {}) {
+  const calls: Array<{ prompt: unknown; systemPrompt?: unknown }> = []
+  const registry = new BotRegistry()
+  registry.register({ id: 'bridge-bot', workspace: process.cwd() })
+  const runtime = new BotRuntime({
+    registry,
+    sessions: new SessionRegistry(new InMemorySessionStore()),
+    ...(options.events ? { events: options.events } : {}),
+    query: ({ prompt, options: queryOptions }) => {
+      calls.push({ prompt, systemPrompt: queryOptions?.systemPrompt })
+      const stream = (async function* (): AsyncGenerator<SDKMessage> {
+        yield {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'runtime bridge output' }], stop_reason: 'end_turn' },
+        } as SDKMessage
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: 'runtime bridge output',
+          total_cost_usd: 0,
+          session_id: `bridge-session-${calls.length}`,
+        } as SDKMessage
+      })()
+      return Object.assign(stream, { close: () => undefined }) as unknown as Query
+    },
+  })
+  return { runtime, calls }
+}
 
 async function fetchJson(app: ReturnType<typeof createOllamaServer>, req: Request): Promise<{
   status: number
@@ -25,6 +60,69 @@ async function fetchJson(app: ReturnType<typeof createOllamaServer>, req: Reques
 }
 
 describe('Ollama bridge endpoints', () => {
+  test('routes OpenAI non-streaming requests through BotRuntime', async () => {
+    const { runtime, calls } = makeRuntime()
+    const app = createOllamaServer({ runtime, runtimeBotId: 'bridge-bot' })
+    const req = new Request('http://x/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        messages: [
+          { role: 'system', content: 'be concise' },
+          { role: 'user', content: 'hello' },
+        ],
+      }),
+    })
+
+    const { status, body } = await fetchJson(app, req)
+
+    expect(status).toBe(200)
+    expect(body).toMatchObject({ choices: [{ message: { content: 'runtime bridge output' } }] })
+    expect(calls).toEqual([{ prompt: 'hello', systemPrompt: 'be concise' }])
+  })
+
+  test('routes OpenAI streaming requests through BotRuntime events', async () => {
+    const events = new RuntimeEventBus()
+    const { runtime } = makeRuntime({ events })
+    const app = createOllamaServer({ runtime, runtimeBotId: 'bridge-bot' })
+    const req = new Request('http://x/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        stream: true,
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    })
+
+    const response = await app.fetch(req)
+    const body = await response.text()
+
+    expect(response.status).toBe(200)
+    expect(body).toContain('runtime bridge output')
+    expect(body).toContain('[DONE]')
+  })
+
+  test('routes Ollama non-streaming requests through BotRuntime', async () => {
+    const { runtime } = makeRuntime()
+    const app = createOllamaServer({ runtime, runtimeBotId: 'bridge-bot' })
+    const req = new Request('http://x/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        messages: [{ role: 'user', content: 'hello' }],
+        stream: false,
+      }),
+    })
+
+    const { status, body } = await fetchJson(app, req)
+
+    expect(status).toBe(200)
+    expect(body).toMatchObject({ message: { content: 'runtime bridge output' }, done: true })
+  })
+
   test('GET / returns the canonical Ollama root marker', async () => {
     const app = createOllamaServer()
     const res = await app.fetch(new Request('http://x/'))

@@ -7,9 +7,9 @@
  * Streaming + session pool + tool/thinking forwarding land in later phases.
  */
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
-import { streamSSE } from 'hono/streaming'
+import { stream, streamSSE } from 'hono/streaming'
 
 import {
   type Options,
@@ -37,6 +37,7 @@ import {
   resultErrorMessage,
   type OpenAIChatCompletionChunk,
   type OpenAIChatCompletionRequest,
+  type OpenAIChatCompletionResponse,
   type OpenAIModelsResponse,
 } from './openai-compat.ts'
 import { SessionPool, hashHistoryPrefix } from './session-pool.ts'
@@ -45,12 +46,15 @@ import {
   buildPromptFromOllamaMessages,
   buildShowResponse,
   buildTagsResponse,
+  ollamaMessagesToHistory,
 } from './transform.ts'
 import type {
   OllamaChatRequest,
   OllamaShowRequest,
   OllamaVersionResponse,
 } from './types.ts'
+import type { BotRuntime } from '../runtime/bot-runtime.ts'
+import type { RuntimeEvent } from '../runtime/events.ts'
 
 export const DEFAULT_OLLAMA_PORT = 11434
 export const FALLBACK_OLLAMA_PORT = 41434
@@ -90,6 +94,14 @@ export interface OllamaServerConfig {
   allowedTools?: string[]
   exposedModels?: string[]
   extraSessionOptions?: Partial<Options>
+  /** Route bridge turns through the bot runtime composition root. */
+  runtime?: BotRuntime
+  runtimeBotId?: string
+  runtimeSessionKey?: (input: {
+    model: string
+    history: HistoryMessage[]
+    clientId?: string
+  }) => string
 }
 
 export function createOllamaServer(
@@ -155,6 +167,39 @@ export function createOllamaServer(
     const { systemPrompt, prompt, attachments } = buildPromptFromOllamaMessages(body.messages)
     const effectiveSystem = config.systemPromptOverride ?? systemPrompt ?? undefined
 
+    if (config.runtime) {
+      if (!config.runtimeBotId) return c.json({ error: 'runtimeBotId is required when runtime is configured' }, 500)
+      const history = ollamaMessagesToHistory(body.messages)
+      const runtimeRequest = {
+        botId: config.runtimeBotId,
+        sessionKey: runtimeSessionKey(config, model, history),
+        trigger: 'message' as const,
+        idempotencyKey: runtimeRequestId('ollama', model, history),
+        prompt,
+        systemPrompt: effectiveSystem,
+        attachments,
+        model,
+        ...(config.cwd ? { workspace: config.cwd } : {}),
+      }
+      if (body.stream) {
+        return runtimeOllamaStream(c, config.runtime, runtimeRequest)
+      }
+      try {
+        const result = await config.runtime.run(runtimeRequest)
+        if (result.status !== 'completed') {
+          return c.json({ error: result.error ?? 'bot run failed' }, 502)
+        }
+        return c.json(buildDoneFrame({
+          model,
+          blocks: { text: result.output ?? '', toolUses: [], stopReason: 'end_turn' },
+          result: null,
+        }))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return c.json({ error: message }, 500)
+      }
+    }
+
     if (body.stream === true) {
       return c.json(
         { error: 'streaming is not implemented in Phase 1; pass "stream": false' },
@@ -174,7 +219,7 @@ export function createOllamaServer(
       // blocks are dropped at the transport layer (see fromAssistantMessage)
       // so Copilot only sees the model's narrative text, not OpenAI
       // tool_calls it can't execute. Bridge cwd === wherever you ran
-      // `claude-sdk --ollama` from — point that at the project you want
+      // the process that calls `serveOllamaBridge()` — point it at the project you want
       // edited.
       maxTurns: config.maxTurns ?? 10,
       ...(config.allowedTools !== undefined ? { allowedTools: config.allowedTools } : {}),
@@ -250,6 +295,34 @@ export function createOllamaServer(
     const { systemPrompt, prompt: fullPrompt } = buildPromptFromOpenAIMessages(body.messages)
     const attachments = attachmentsFromHistory(history)
     const effectiveSystem = config.systemPromptOverride ?? systemPrompt ?? undefined
+
+    if (config.runtime) {
+      if (!config.runtimeBotId) return c.json({ error: { message: 'runtimeBotId is required when runtime is configured', type: 'server_error' } }, 500)
+      const runtimeRequest = {
+        botId: config.runtimeBotId,
+        sessionKey: runtimeSessionKey(config, model, history, body.user),
+        trigger: 'message' as const,
+        idempotencyKey: runtimeRequestId('openai', model, history, body.user),
+        prompt: fullPrompt,
+        systemPrompt: effectiveSystem,
+        attachments,
+        model,
+        ...(config.cwd ? { workspace: config.cwd } : {}),
+      }
+      if (body.stream) {
+        return runtimeOpenAIStream(c, config.runtime, runtimeRequest, requestId, model)
+      }
+      try {
+        const result = await config.runtime.run(runtimeRequest)
+        if (result.status !== 'completed') {
+          return c.json({ error: { message: result.error ?? 'bot run failed', type: 'upstream_error' } }, 502)
+        }
+        return c.json(buildRuntimeOpenAIResponse(requestId, model, result.output ?? ''))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return c.json({ error: { message, type: 'server_error' } }, 500)
+      }
+    }
 
     const acquired = acquireOrCreate({
       pool,
@@ -371,6 +444,158 @@ export function createOllamaServer(
   return app
 }
 
+type RuntimeBridgeRequest = Parameters<BotRuntime['run']>[0]
+
+function runtimeSessionKey(
+  config: OllamaServerConfig,
+  model: string,
+  history: HistoryMessage[],
+  clientId?: string,
+): string {
+  if (config.runtimeSessionKey) return config.runtimeSessionKey({ model, history, ...(clientId ? { clientId } : {}) })
+  const prefix = history.slice(0, Math.max(0, history.length - 1))
+  return `protocol:${config.runtimeBotId ?? 'runtime'}:${clientId ?? hashHistoryPrefix(model, prefix)}`
+}
+
+function runtimeRequestId(
+  protocol: string,
+  model: string,
+  history: HistoryMessage[],
+  clientId?: string,
+): string {
+  return `${protocol}:${model}:${clientId ?? hashHistoryPrefix(model, history)}`
+}
+
+async function runtimeOllamaStream(
+  context: Context,
+  runtime: BotRuntime,
+  request: RuntimeBridgeRequest,
+): Promise<Response> {
+  return stream(context, async (output) => {
+    let runId: string | undefined
+    let emittedText = false
+    const buffered: RuntimeEvent[] = []
+    const writeEvent = async (event: RuntimeEvent): Promise<void> => {
+      if (!runId || event.runId !== runId || event.type !== 'assistant.delta') return
+      emittedText = true
+      await output.write(`${JSON.stringify(buildTextDeltaFrame(request.model ?? '', event.text))}\n`)
+    }
+    const unsubscribe = runtime.subscribe((event) => {
+      if (!runId) {
+        buffered.push(event)
+        return
+      }
+      return writeEvent(event)
+    })
+
+    try {
+      const handle = runtime.start(request)
+      runId = handle.runId
+      for (const event of buffered.splice(0)) await writeEvent(event)
+      const result = await handle.result
+      if (result.status !== 'completed') {
+        await output.write(`${JSON.stringify({ error: result.error ?? 'bot run failed' })}\n`)
+        return
+      }
+      if (!emittedText && result.output) {
+        await output.write(`${JSON.stringify(buildTextDeltaFrame(request.model ?? '', result.output))}\n`)
+      }
+      await output.write(`${JSON.stringify(buildDoneFrame({
+        model: request.model ?? '',
+        blocks: { text: '', toolUses: [], stopReason: 'end_turn' },
+        result: null,
+      }))}\n`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await output.write(`${JSON.stringify({ error: message })}\n`)
+    } finally {
+      unsubscribe()
+    }
+  })
+}
+
+async function runtimeOpenAIStream(
+  context: Context,
+  runtime: BotRuntime,
+  request: RuntimeBridgeRequest,
+  requestId: string,
+  model: string,
+): Promise<Response> {
+  return streamSSE(context, async (output) => {
+    const converter = new StreamingChunkConverter(requestId, model)
+    let runId: string | undefined
+    let emittedText = false
+    const buffered: RuntimeEvent[] = []
+    const writeChunk = async (chunk: OpenAIChatCompletionChunk): Promise<void> => {
+      emittedText = true
+      await output.writeSSE({ data: JSON.stringify(chunk) })
+    }
+    const writeEvent = async (event: RuntimeEvent): Promise<void> => {
+      if (!runId || event.runId !== runId || event.type !== 'assistant.delta') return
+      for (const chunk of converter.fromAssistantMessage(runtimeAssistantMessage(event.text))) {
+        await writeChunk(chunk)
+      }
+    }
+    const unsubscribe = runtime.subscribe((event) => {
+      if (!runId) {
+        buffered.push(event)
+        return
+      }
+      return writeEvent(event)
+    })
+
+    try {
+      await output.writeSSE({ data: JSON.stringify(converter.buildRoleChunk()) })
+      const handle = runtime.start(request)
+      runId = handle.runId
+      for (const event of buffered.splice(0)) await writeEvent(event)
+      const result = await handle.result
+      if (result.status !== 'completed') {
+        await output.writeSSE({ data: JSON.stringify({ error: { message: result.error ?? 'bot run failed', type: 'upstream_error' } }) })
+        return
+      }
+      if (!emittedText && result.output) {
+        for (const chunk of converter.fromAssistantMessage(runtimeAssistantMessage(result.output))) {
+          await writeChunk(chunk)
+        }
+      }
+      await output.writeSSE({ data: JSON.stringify(converter.buildFinishChunk()) })
+      await output.writeSSE({ data: '[DONE]' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await output.writeSSE({ data: JSON.stringify({ error: { message, type: 'server_error' } }) })
+    } finally {
+      unsubscribe()
+    }
+  })
+}
+
+function runtimeAssistantMessage(text: string): SDKAssistantMessage {
+  return {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }], stop_reason: null },
+  } as unknown as SDKAssistantMessage
+}
+
+function buildRuntimeOpenAIResponse(
+  id: string,
+  model: string,
+  output: string,
+): OpenAIChatCompletionResponse {
+  return {
+    id,
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content: output || null },
+      finish_reason: 'stop',
+    }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  }
+}
+
 /**
  * Look the session up in the pool by client-history prefix hash. On hit,
  * returns the existing session and the prompt becomes the *last user message
@@ -490,7 +715,7 @@ function logTimings(args: {
  * Map an SDK message to zero-or-more OpenAI chunks.
  * - `stream_event` → forward partial deltas (preferred path; only fires when V2
  *   session honours `includePartialMessages: true`).
- * - `assistant` → fallback. Patched V2 sessions dispatch complete assistant
+ * - `assistant` → fallback. Streaming-input sessions dispatch complete assistant
  *   messages without partial events; we synthesise the equivalent delta
  *   chunks so the client still sees content. Skipped if real stream_event has
  *   already produced output (avoids double-emit on dual-channel SDKs).
