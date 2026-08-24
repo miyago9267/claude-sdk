@@ -8,6 +8,12 @@ export {
 
 export { resolveRuntimeConfig } from './resolver.ts'
 
+export {
+  runtimeConfigToAgentOptions,
+  type RuntimeConfigMapping,
+  type RuntimePolicyInputs,
+} from './mapping.ts'
+
 export type {
   ConfigDiagnostic,
   ConfigLayer,

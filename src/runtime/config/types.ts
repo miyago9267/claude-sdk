@@ -11,7 +11,7 @@ export interface RuntimeConfig {
 
 export interface ConfigDiagnostic {
   level: 'warning' | 'error'
-  code: 'unsupported' | 'override' | 'invalid'
+  code: 'unsupported' | 'override' | 'invalid' | 'unsafe'
   field: string
   source: string
   message: string

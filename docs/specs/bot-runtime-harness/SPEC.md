@@ -87,6 +87,8 @@ permissions、resume/fork、compact、usage/cost、budget 與 execution options�
   filtering 與 sensitive-field redaction。
 - Config compatibility foundation：provider-neutral `RuntimeConfig`、read-only
   Codex TOML import、layer precedence 與 unsupported/override diagnostics。
+- Config mapping foundation：supported fields map to Claude SDK options and
+  explicit runtime policy inputs with fail-closed privilege handling。
 - Delivery foundation：channel-independent `DeliveryRouter`、lifecycle events
   與 in-memory adapter；實際 channel adapter 仍由外部整合層提供。
 - CI/CD Agent SDK update 與 SessionStart version check。
@@ -377,7 +379,7 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - [x] Implement read-only Codex TOML adapter。
 - [x] Implement precedence resolver for imported config、project config、bot
   manifest 與 per-run override。
-- [ ] Map supported config into SDK options and runtime policy with fail-closed
+- [x] Map supported config into SDK options and runtime policy with fail-closed
   privilege handling。
 - [x] Add conflict、unsupported-field、read-only 與 precedence tests。
 
@@ -462,10 +464,10 @@ Audit limitations: default redaction is key-based and protects common secret
 fields; arbitrary secret values embedded in free-form text require a caller
 provided redaction layer before persistence.
 
-Config compatibility limitations: the current slice imports Codex runtime fields
-and resolves precedence, but does not yet apply sandbox/approval semantics to
-Claude SDK options; those mappings remain fail-closed until their privilege
-equivalence is explicitly defined.
+Config compatibility limitations: the current mapping emits explicit SDK options
+and runtime policy inputs, but automatic merging into `BotManifest` is still
+caller-owned. Claude `settings.json` adapter and provider fallback remain future
+work; `danger-full-access` intentionally stays sandboxed with an unsafe diagnostic.
 
 Phase 3 limitations: cron uses UTC 5-field expressions only and scheduler does not
 yet provide missed-run/catch-up policy, job chaining or script-only jobs. Memory
