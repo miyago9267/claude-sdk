@@ -421,6 +421,11 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
   - **Reason:** Bot manifest、project config 與 per-run override 需要同一個
     precedence 與 conflict model，不能直接讓 caller 依賴 Codex 或 Claude 欄位。
   - **By:** Miyago (2026-08-24)
+- **Optimize utilities 不自動進入 BotRuntime。**
+  - **Reason:** 官方 SDK 已接管 loop、compact、cache 與 execution primitives；
+    wrapper 只保留有明確產品價值的 usage/reporting、external history policy、
+    routing 與 compatibility surface。
+  - **By:** Miyago (2026-08-24)
 
 ## Delivery phases
 
@@ -484,7 +489,8 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - [x] Add partial failure, timeout and per-child budget propagation through `BotRuntime`。
 - [x] Define generic channel delivery contract and router。
 - [ ] Implement concrete channel delivery adapters。
-- [ ] Keep OpenAI/Ollama bridge on the generic delivery contract。
+- [x] Keep OpenAI/Ollama bridge on the generic runtime/delivery boundary；protocol
+  serialization remains an edge adapter。
 
 ### Phase 6: Production hardening
 
@@ -492,7 +498,9 @@ Runtime config 必須能 read-only import Codex `config.toml` 與 Claude
 - [x] Add sandbox/worktree adapters and resource limits。
 - [x] Add queryable traces, metrics and audit export。
 - [x] Add crash recovery and abandoned-run repair tooling。
-- [ ] Review and remove optimize utilities replaced by official SDK features。
+- [x] Review optimize utilities against official SDK features；保留仍提供
+  per-turn usage、外部 history pruning、routing policy、cache diagnostics 或
+  compatibility wrapper 的 optional utilities。
 
 ## Existing files and expected future areas
 
